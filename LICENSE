@@ -1,18 +1,6 @@
-# Third-party notices
-
-## ShazamIO
-
-The optional, locally built recognition helper uses ShazamIO 0.8.1, Copyright
-(c) 2021 dotX12 and contributors, under the MIT License.
-
-ShazamIO is an unofficial client for a reverse-engineered Shazam endpoint. It
-is not affiliated with or endorsed by Apple or Shazam.
-
-Source: https://github.com/dotX12/ShazamIO
-
 MIT License
 
-Copyright (c) 2021 dotX12
+Copyright (c) 2026 Gilad Fride
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -9,7 +9,11 @@ final class DeskPulseTests: XCTestCase {
 
     func testDefaultLayoutContainsAllCoreWidgets() {
         let kinds = Set(DashboardModel.defaultWidgets.map(\.kind))
-        XCTAssertEqual(kinds, Set(WidgetKind.allCases))
+        XCTAssertEqual(kinds, [
+            .gmail, .stocks, .clocks, .date, .weather,
+            .ynet, .rotter, .whatsapp, .youtubeMusic, .liveTV, .radio
+        ])
+        XCTAssertTrue(Set(WidgetKind.allCases).isSuperset(of: kinds))
     }
 
     func testDefaultStocksIncludeIntel() {
@@ -30,6 +34,18 @@ final class DeskPulseTests: XCTestCase {
         let first = FeedItem(title: "Old title", link: link, date: nil)
         let refreshed = FeedItem(title: "Updated title", link: link, date: Date())
         XCTAssertEqual(first.id, refreshed.id)
+    }
+
+    func testIncomingRocketDetectionMatchesRotterAlertPhrase() {
+        XCTAssertTrue(DashboardModel.containsIncomingRocketAlert(
+            "דיווח ראשוני: צבע אדום באזור המרכז"
+        ))
+        XCTAssertTrue(DashboardModel.containsIncomingRocketAlert(
+            "התרעה: צבע   אדום בעוטף"
+        ))
+        XCTAssertFalse(DashboardModel.containsIncomingRocketAlert(
+            "עדכון חדשות רגיל ללא התרעה"
+        ))
     }
 
     func testAMDTradingSessionBoundariesUseEasternTime() throws {

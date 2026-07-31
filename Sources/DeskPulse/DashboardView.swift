@@ -4,6 +4,8 @@ struct DashboardView: View {
     @EnvironmentObject private var model: DashboardModel
     @State private var canvasSize: CGSize = .zero
     @State private var savedSlotFeedback: Int?
+    @State private var warSavedFeedback = false
+    @State private var hoveredWidgetKind: WidgetKind?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -26,7 +28,9 @@ struct DashboardView: View {
                 Color.clear
                     .onAppear {
                         canvasSize = proxy.size
-                        if model.needsInitialArrange {
+                        if model.activeLayout == .war && !model.hasSavedWarLayout {
+                            model.activateWarLayout(in: proxy.size)
+                        } else if model.needsInitialArrange {
                             model.autoArrange(in: proxy.size)
                         }
                     }
@@ -43,15 +47,27 @@ struct DashboardView: View {
                 window.toggleFullScreen(nil)
             }
         }
+        .onChange(of: model.warActivationRequest) { _, request in
+            guard request > 0, model.activeLayout != .war else { return }
+            withAnimation(.snappy(duration: 0.45)) {
+                model.activateWarLayout(in: canvasSize)
+            }
+        }
     }
 
     private var background: some View {
-        ZStack {
+        let warMode = model.activeLayout == .war
+        return ZStack {
             LinearGradient(
-                colors: [
-                    Color(red: 0.025, green: 0.035, blue: 0.065),
-                    Color(red: 0.055, green: 0.075, blue: 0.12)
-                ],
+                colors: warMode
+                    ? [
+                        Color(red: 0.035, green: 0.025, blue: 0.035),
+                        Color(red: 0.12, green: 0.025, blue: 0.035)
+                    ]
+                    : [
+                        Color(red: 0.025, green: 0.035, blue: 0.065),
+                        Color(red: 0.055, green: 0.075, blue: 0.12)
+                    ],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
             Circle()
@@ -64,6 +80,13 @@ struct DashboardView: View {
                 .frame(width: 500)
                 .blur(radius: 100)
                 .offset(x: 540, y: 320)
+            if warMode {
+                Circle()
+                    .fill(Color.red.opacity(0.10))
+                    .frame(width: 720)
+                    .blur(radius: 110)
+                    .offset(x: 420, y: -260)
+            }
         }
     }
 
@@ -98,6 +121,21 @@ struct DashboardView: View {
                         ? "Keep-awake is on — click to allow sleep"
                         : "Sleep is allowed — click to keep the display awake"
                 )
+
+                Button {
+                    model.toggleIncomingAlertDetection()
+                } label: {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                }
+                .buttonStyle(HeaderButtonStyle(
+                    active: model.incomingAlertDetectionEnabled,
+                    activeColor: .red
+                ))
+                .help(
+                    model.incomingAlertDetectionEnabled
+                        ? "Incoming alert detection is on — new Rotter “צבע אדום” alerts activate the situation layout"
+                        : "Incoming alert detection is off"
+                )
             }
             Spacer()
             HStack(spacing: 5) {
@@ -126,6 +164,30 @@ struct DashboardView: View {
                             }
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            hoveredWidgetKind = hovering ? kind : nil
+                        }
+                    }
+                    .overlay(alignment: .bottom) {
+                        if hoveredWidgetKind == kind {
+                            Text(kind.title)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .fixedSize()
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                                .background(Color.black.opacity(0.92))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                                }
+                                .offset(y: 34)
+                                .allowsHitTesting(false)
+                                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        }
+                    }
                     .help("\(model.isVisible(kind) ? "Hide" : "Show") \(kind.title)")
                 }
             }
@@ -136,6 +198,7 @@ struct DashboardView: View {
                 ForEach(1...4, id: \.self) { slot in
                     layoutSlotButton(slot)
                 }
+                warLayoutButton
             }
             Button {
                 Task { await model.refresh() }
@@ -179,11 +242,14 @@ struct DashboardView: View {
     private func layoutSlotButton(_ slot: Int) -> some View {
         let isSaved = model.savedLayoutSlots.contains(slot)
         let justSaved = savedSlotFeedback == slot
+        let isActive = model.activeLayout == .saved(slot)
         return ZStack {
             RoundedRectangle(cornerRadius: 7)
                 .fill(
                     justSaved
                         ? Color.green.opacity(0.28)
+                        : isActive
+                            ? Color.cyan.opacity(0.32)
                         : isSaved
                             ? Color.cyan.opacity(0.13)
                             : Color.white.opacity(0.035)
@@ -192,6 +258,8 @@ struct DashboardView: View {
                 .stroke(
                     justSaved
                         ? Color.green.opacity(0.65)
+                        : isActive
+                            ? Color.cyan.opacity(0.85)
                         : isSaved
                             ? Color.cyan.opacity(0.28)
                             : Color.white.opacity(0.08)
@@ -204,6 +272,13 @@ struct DashboardView: View {
                 Text("\(slot)")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(isSaved ? .white : .secondary)
+            }
+            if isActive && !justSaved {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: .green.opacity(0.8), radius: 3)
+                    .offset(x: 9, y: -9)
             }
         }
         .frame(width: 27, height: 27)
@@ -244,6 +319,73 @@ struct DashboardView: View {
                 : "Press and hold to save"
         )
     }
+
+    private var warLayoutButton: some View {
+        let isActive = model.activeLayout == .war
+        return ZStack {
+            RoundedRectangle(cornerRadius: 7)
+                .fill(
+                    warSavedFeedback
+                        ? Color.green.opacity(0.28)
+                        : isActive
+                            ? Color.red.opacity(0.28)
+                            : Color.white.opacity(0.035)
+                )
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(
+                    warSavedFeedback
+                        ? Color.green.opacity(0.65)
+                        : isActive
+                            ? Color.red.opacity(0.75)
+                            : Color.white.opacity(0.08),
+                    lineWidth: 1
+                )
+            Image(systemName: warSavedFeedback ? "checkmark" : "shield.lefthalf.filled")
+                .font(.system(size: 11, weight: .black))
+                .foregroundStyle(warSavedFeedback ? Color.green : Color.red)
+                .shadow(
+                    color: isActive && !warSavedFeedback
+                        ? Color.red.opacity(0.75)
+                        : .clear,
+                    radius: 3
+                )
+        }
+        .frame(width: 27, height: 27)
+        .contentShape(RoundedRectangle(cornerRadius: 7))
+        .gesture(
+            LongPressGesture(minimumDuration: 0.75)
+                .exclusively(before: TapGesture())
+                .onEnded { result in
+                    switch result {
+                    case .first:
+                        model.saveWarLayout()
+                        warSavedFeedback = true
+                        NSHapticFeedbackManager.defaultPerformer.perform(
+                            .alignment,
+                            performanceTime: .now
+                        )
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            warSavedFeedback = false
+                        }
+                    case .second:
+                        withAnimation(.snappy(duration: 0.4)) {
+                            model.activateWarLayout(in: canvasSize)
+                        }
+                    }
+                }
+        )
+        .help(
+            model.hasSavedWarLayout
+                ? "Israel situation layout: click to restore, press and hold to overwrite"
+                : "Israel situation layout: click for the default, press and hold to save"
+        )
+        .accessibilityLabel("Israel situation layout")
+        .accessibilityHint(
+            model.hasSavedWarLayout
+                ? "Click to restore or press and hold to overwrite"
+                : "Click for the default layout or press and hold to save"
+        )
+    }
 }
 
 private struct DashboardGrid: View {
@@ -272,6 +414,7 @@ private struct DashboardGrid: View {
 
 private struct HeaderButtonStyle: ButtonStyle {
     var active = false
+    var activeColor: Color = .cyan
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -279,7 +422,11 @@ private struct HeaderButtonStyle: ButtonStyle {
             .foregroundStyle(active ? .black : .white)
             .padding(.horizontal, 12)
             .frame(height: 32)
-            .background(active ? Color.cyan : Color.white.opacity(configuration.isPressed ? 0.16 : 0.08))
+            .background(
+                active
+                    ? activeColor
+                    : Color.white.opacity(configuration.isPressed ? 0.16 : 0.08)
+            )
             .clipShape(Capsule())
     }
 }

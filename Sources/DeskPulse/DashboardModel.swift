@@ -10,6 +10,8 @@ final class DashboardModel: ObservableObject {
     @Published var weather: WeatherSnapshot?
     @Published var ynetItems: [FeedItem] = []
     @Published var rotterItems: [FeedItem] = []
+    @Published var cnnItems: [FeedItem] = []
+    @Published var foxItems: [FeedItem] = []
     @Published var lastRefresh: Date?
     @Published var isRefreshing = false
     @Published var stockSymbols: [StockSymbol]
@@ -18,16 +20,42 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var savedLayoutSlots: Set<Int> = []
     @Published private(set) var snapsToGrid: Bool
     @Published private(set) var preventsSleep = false
+    @Published private(set) var activeLayout: DashboardLayoutSelection?
+    @Published private(set) var hasSavedWarLayout: Bool
+    @Published private(set) var incomingAlertDetectionEnabled: Bool
+    @Published private(set) var warActivationRequest = 0
 
     private let storageKey = "dashboard.widgets.v2"
     private let stocksStorageKey = "dashboard.stocks.v1"
     private let hiddenStorageKey = "dashboard.hidden-widgets.v1"
     private let layoutStoragePrefix = "dashboard.saved-layout.v1."
     private let snapToGridStorageKey = "dashboard.snap-to-grid.v1"
+    private let activeLayoutStorageKey = "dashboard.active-layout.v1"
+    private let warLayoutStorageKey = "dashboard.war-layout.v1"
+    private let incomingAlertDetectionStorageKey =
+        "dashboard.incoming-alert-detection.v1"
     private var refreshTask: Task<Void, Never>?
     private var sleepAssertionID = IOPMAssertionID(0)
+    private var knownRotterItemIDs: Set<String>?
 
     init() {
+        incomingAlertDetectionEnabled = UserDefaults.standard.object(
+            forKey: "dashboard.incoming-alert-detection.v1"
+        ) as? Bool ?? true
+        hasSavedWarLayout = UserDefaults.standard.data(
+            forKey: "dashboard.war-layout.v1"
+        ) != nil
+        let storedActiveLayout = UserDefaults.standard.integer(
+            forKey: activeLayoutStorageKey
+        )
+        if storedActiveLayout == 0,
+           UserDefaults.standard.object(forKey: activeLayoutStorageKey) != nil {
+            activeLayout = .war
+        } else if (1...4).contains(storedActiveLayout) {
+            activeLayout = .saved(storedActiveLayout)
+        } else {
+            activeLayout = nil
+        }
         snapsToGrid = UserDefaults.standard.object(
             forKey: snapToGridStorageKey
         ) as? Bool ?? true
@@ -106,6 +134,8 @@ final class DashboardModel: ObservableObject {
             widgets = Self.defaultWidgets
             UserDefaults.standard.set(true, forKey: "dashboard.compact-amd-widget.v1")
         }
+        inferActiveSavedLayoutIfNeeded()
+        ensureWidgetLibrary()
     }
 
     func start() {
@@ -130,11 +160,32 @@ final class DashboardModel: ObservableObject {
         async let newRotter = DataService.fetchFeed(
             URL(string: "https://rotter.net/rss/rotternews.xml")!
         )
-        let results = await (newQuotes, newWeather, newYnet, newRotter)
+        async let newCNN = DataService.fetchFeed(
+            URL(string: "https://news.google.com/rss/search?q=when%3A1d%20source%3ACNN%20world&hl=en-US&gl=US&ceid=US%3Aen")!
+        )
+        async let newFox = DataService.fetchFeed(
+            URL(string: "https://moxie.foxnews.com/google-publisher/latest.xml")!
+        )
+        let results = await (
+            newQuotes, newWeather, newYnet, newRotter, newCNN, newFox
+        )
         if !results.0.isEmpty { quotes = results.0 }
         if let value = results.1 { weather = value }
         if !results.2.isEmpty { ynetItems = results.2 }
-        if !results.3.isEmpty { rotterItems = results.3 }
+        if !results.3.isEmpty {
+            processIncomingAlertRule(results.3)
+            rotterItems = results.3
+        }
+        if !results.4.isEmpty {
+            cnnItems = results.4.map {
+                FeedItem(
+                    title: $0.title.replacingOccurrences(of: " - CNN", with: ""),
+                    link: $0.link,
+                    date: $0.date
+                )
+            }
+        }
+        if !results.5.isEmpty { foxItems = results.5 }
         lastRefresh = Date()
         isRefreshing = false
     }
@@ -177,6 +228,15 @@ final class DashboardModel: ObservableObject {
             sleepAssertionID = assertionID
             preventsSleep = true
         }
+    }
+
+    func toggleIncomingAlertDetection() {
+        incomingAlertDetectionEnabled.toggle()
+        UserDefaults.standard.set(
+            incomingAlertDetectionEnabled,
+            forKey: incomingAlertDetectionStorageKey
+        )
+        knownRotterItemIDs = Set(rotterItems.map(\.id))
     }
 
     func update(_ widget: DashboardWidget) {
@@ -248,6 +308,7 @@ final class DashboardModel: ObservableObject {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults.standard.set(data, forKey: "\(layoutStoragePrefix)\(slot)")
         savedLayoutSlots.insert(slot)
+        setActiveLayout(.saved(slot))
     }
 
     @discardableResult
@@ -268,7 +329,104 @@ final class DashboardModel: ObservableObject {
         needsInitialArrange = false
         save()
         saveHiddenKinds()
+        setActiveLayout(.saved(slot))
         return true
+    }
+
+    func activateWarLayout(in canvasSize: CGSize) {
+        if let data = UserDefaults.standard.data(forKey: warLayoutStorageKey),
+           let storedSnapshot = try? JSONDecoder().decode(
+               DashboardLayoutSnapshot.self,
+               from: data
+           ) {
+            let snapshot = normalizedWarSnapshot(storedSnapshot)
+            widgets = snapshot.widgets
+            hiddenKinds = snapshot.hiddenKinds
+            if snapshot != storedSnapshot,
+               let migrated = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(migrated, forKey: warLayoutStorageKey)
+            }
+            needsInitialArrange = false
+            save()
+            saveHiddenKinds()
+            setActiveLayout(.war)
+            return
+        }
+        applyDefaultWarLayout(in: canvasSize)
+    }
+
+    func saveWarLayout() {
+        let snapshot = DashboardLayoutSnapshot(
+            widgets: widgets,
+            hiddenKinds: hiddenKinds
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: warLayoutStorageKey)
+        hasSavedWarLayout = true
+        setActiveLayout(.war)
+    }
+
+    private func applyDefaultWarLayout(in canvasSize: CGSize) {
+        guard canvasSize.width > 900, canvasSize.height > 600 else { return }
+        let edge = 16.0
+        let gap = 16.0
+        let width = Double(canvasSize.width)
+        let height = Double(canvasSize.height)
+        let topHeight = min(Self.compactWidgetDefaultHeight, max(150, height * 0.14))
+        let dateWidth = min(330, max(250, width * 0.16))
+        let clocksWidth = width - edge * 2 - gap - dateWidth
+        let mediaY = edge + topHeight + gap
+        let mediaWidth = (width - edge * 2 - gap * 3) / 4
+        let mediaHeight = min(260, max(190, mediaWidth * 9 / 16))
+        let mainY = mediaY + mediaHeight + gap
+        let mainHeight = max(320, height - mainY - edge)
+        let alertWidth = min(500, max(380, width * 0.24))
+        let whatsappWidth = min(650, max(480, width * 0.30))
+        let whatsappX = edge + alertWidth + gap
+        let newsX = whatsappX + whatsappWidth + gap
+        let newsAreaWidth = width - newsX - edge
+        let newsWidth = (newsAreaWidth - gap) / 2
+        let newsHeight = (mainHeight - gap) / 2
+
+        let frames: [(WidgetKind, CGRect)] = [
+            (.clocks, CGRect(x: edge, y: edge, width: clocksWidth, height: topHeight)),
+            (.date, CGRect(x: edge + clocksWidth + gap, y: edge, width: dateWidth, height: topHeight)),
+            (.liveTV11, CGRect(x: edge, y: mediaY, width: mediaWidth, height: mediaHeight)),
+            (.liveTV, CGRect(x: edge + mediaWidth + gap, y: mediaY, width: mediaWidth, height: mediaHeight)),
+            (.liveTVCNN, CGRect(x: edge + (mediaWidth + gap) * 2, y: mediaY, width: mediaWidth, height: mediaHeight)),
+            (.radio, CGRect(x: edge + (mediaWidth + gap) * 3, y: mediaY, width: mediaWidth, height: mediaHeight)),
+            (.redAlert, CGRect(x: edge, y: mainY, width: alertWidth, height: mainHeight)),
+            (.whatsapp, CGRect(x: whatsappX, y: mainY, width: whatsappWidth, height: mainHeight)),
+            (.ynet, CGRect(x: newsX, y: mainY, width: newsWidth, height: newsHeight)),
+            (.rotter, CGRect(x: newsX + newsWidth + gap, y: mainY, width: newsWidth, height: newsHeight)),
+            (.cnn, CGRect(x: newsX, y: mainY + newsHeight + gap, width: newsWidth, height: newsHeight)),
+            (.fox, CGRect(x: newsX + newsWidth + gap, y: mainY + newsHeight + gap, width: newsWidth, height: newsHeight))
+        ]
+
+        for (kind, frame) in frames {
+            if let index = widgets.firstIndex(where: { $0.kind == kind }) {
+                widgets[index].x = frame.minX
+                widgets[index].y = frame.minY
+                widgets[index].width = frame.width
+                widgets[index].height = frame.height
+            } else {
+                widgets.append(DashboardWidget(
+                    id: UUID(),
+                    kind: kind,
+                    x: frame.minX,
+                    y: frame.minY,
+                    width: frame.width,
+                    height: frame.height
+                ))
+            }
+        }
+
+        let warKinds = Set(frames.map(\.0))
+        hiddenKinds = Set(WidgetKind.allCases).subtracting(warKinds)
+        needsInitialArrange = false
+        save()
+        saveHiddenKinds()
+        setActiveLayout(.war)
     }
 
     func addStock(_ rawSymbol: String) {
@@ -458,6 +616,106 @@ final class DashboardModel: ObservableObject {
             hiddenKinds.map(\.rawValue).sorted(),
             forKey: hiddenStorageKey
         )
+    }
+
+    private func ensureWidgetLibrary() {
+        let additions: [(WidgetKind, Double, Double)] = [
+            (.redAlert, 500, 500),
+            (.liveTV11, 520, 300),
+            (.liveTV13, 520, 300),
+            (.liveTVCNN, 520, 300),
+            (.cnn, 420, 400),
+            (.fox, 420, 400)
+        ]
+        var changed = false
+        for (kind, width, height) in additions
+        where !widgets.contains(where: { $0.kind == kind }) {
+            widgets.append(DashboardWidget(
+                id: UUID(),
+                kind: kind,
+                x: 32,
+                y: 32,
+                width: width,
+                height: height
+            ))
+            hiddenKinds.insert(kind)
+            changed = true
+        }
+        if changed {
+            save()
+            saveHiddenKinds()
+        }
+    }
+
+    private func inferActiveSavedLayoutIfNeeded() {
+        guard activeLayout == nil else { return }
+        for slot in 1...4 {
+            guard
+                let data = UserDefaults.standard.data(
+                    forKey: "\(layoutStoragePrefix)\(slot)"
+                ),
+                let snapshot = try? JSONDecoder().decode(
+                    DashboardLayoutSnapshot.self,
+                    from: data
+                ),
+                snapshot.widgets == widgets,
+                snapshot.hiddenKinds == hiddenKinds
+            else { continue }
+            setActiveLayout(.saved(slot))
+            return
+        }
+    }
+
+    private func normalizedWarSnapshot(
+        _ snapshot: DashboardLayoutSnapshot
+    ) -> DashboardLayoutSnapshot {
+        var migratedWidgets = snapshot.widgets
+        if !migratedWidgets.contains(where: { $0.kind == .liveTVCNN }),
+           let channel13Index = migratedWidgets.firstIndex(
+               where: { $0.kind == .liveTV13 }
+           ) {
+            migratedWidgets[channel13Index].kind = .liveTVCNN
+        }
+        var migratedHiddenKinds = snapshot.hiddenKinds
+        migratedHiddenKinds.insert(.liveTV13)
+        migratedHiddenKinds.remove(.liveTVCNN)
+        return DashboardLayoutSnapshot(
+            widgets: migratedWidgets,
+            hiddenKinds: migratedHiddenKinds
+        )
+    }
+
+    private func setActiveLayout(_ selection: DashboardLayoutSelection) {
+        activeLayout = selection
+        switch selection {
+        case .saved(let slot):
+            UserDefaults.standard.set(slot, forKey: activeLayoutStorageKey)
+        case .war:
+            UserDefaults.standard.set(0, forKey: activeLayoutStorageKey)
+        }
+    }
+
+    private func processIncomingAlertRule(_ items: [FeedItem]) {
+        let currentIDs = Set(items.map(\.id))
+        defer { knownRotterItemIDs = currentIDs }
+        guard
+            incomingAlertDetectionEnabled,
+            activeLayout != .war,
+            let knownRotterItemIDs
+        else { return }
+
+        let newItems = items.filter { !knownRotterItemIDs.contains($0.id) }
+        guard newItems.contains(where: {
+            Self.containsIncomingRocketAlert($0.title)
+        }) else { return }
+        warActivationRequest &+= 1
+    }
+
+    static func containsIncomingRocketAlert(_ title: String) -> Bool {
+        title.range(
+            of: #"צבע\s+אדום"#,
+            options: .regularExpression
+        ) != nil
     }
 
     static let defaultWidgets: [DashboardWidget] = [

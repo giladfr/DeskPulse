@@ -4,10 +4,24 @@ set -euo pipefail
 tools_dir=${0:A:h}
 build_dir=$(mktemp -d)
 trap 'rm -rf "$build_dir"' EXIT
-python_bin=/opt/homebrew/opt/python@3.11/bin/python3.11
+python_bin=${DESKPULSE_PYTHON:-}
 
-if [[ ! -x "$python_bin" ]]; then
-  echo "Python 3.11 is required at $python_bin" >&2
+if [[ -z "$python_bin" ]]; then
+  for candidate in python3.11 /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      python_bin=$(command -v "$candidate")
+      break
+    fi
+  done
+fi
+
+if [[ -z "$python_bin" || ! -x "$python_bin" ]]; then
+  echo "Python 3.11+ is required. Set DESKPULSE_PYTHON to its executable." >&2
+  exit 1
+fi
+
+if ! "$python_bin" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+  echo "Python 3.11+ is required; found $($python_bin --version 2>&1)." >&2
   exit 1
 fi
 

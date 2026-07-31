@@ -218,20 +218,32 @@ enum DataService {
         return decoded
     }
 
-    static func fetchLiveTVPlayerURL() async -> URL? {
-        let pageURL = URL(string: "https://gurutv.online/ch12.html")!
+    static func fetchLiveTVPlayerSource(channel: String) async -> LiveTVPlayerSource? {
+        guard ["11", "12", "13", "cnn"].contains(channel) else { return nil }
+        let pageURL = URL(string: "https://gurutv.online/ch\(channel).html")!
         guard let (data, _) = try? await session.data(from: pageURL),
-              let html = String(data: data, encoding: .utf8),
-              let playerStart = html.range(of: "class=\"videoplayer\""),
-              let sourceStart = html.range(
+              let html = String(data: data, encoding: .utf8)
+        else { return nil }
+
+        if let marker = html.range(of: "var m3u8Url = '"),
+           let valueEnd = html[marker.upperBound...].firstIndex(of: "'") {
+            let value = String(html[marker.upperBound..<valueEnd])
+                .replacingOccurrences(of: "&amp;", with: "&")
+            return URL(string: value).map(LiveTVPlayerSource.hls)
+        }
+
+        guard
+            let playerStart = html.range(of: "class=\"videoplayer\""),
+            let sourceStart = html.range(
                 of: "src=\"",
                 range: playerStart.upperBound..<html.endIndex
-              ) else { return nil }
+            )
+        else { return nil }
         let valueStart = sourceStart.upperBound
         guard let valueEnd = html[valueStart...].firstIndex(of: "\"") else { return nil }
-        let encodedURL = String(html[valueStart..<valueEnd])
+        let value = String(html[valueStart..<valueEnd])
             .replacingOccurrences(of: "&amp;", with: "&")
-        return URL(string: encodedURL)
+        return URL(string: value).map(LiveTVPlayerSource.web)
     }
 
     private static func weatherDescription(_ code: Int) -> String {

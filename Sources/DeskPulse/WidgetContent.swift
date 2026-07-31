@@ -17,6 +17,9 @@ struct WidgetContent: View {
         case .weather: WeatherWidget()
         case .ynet: FeedWidget(source: .ynet)
         case .rotter: FeedWidget(source: .rotter)
+        case .cnn: FeedWidget(source: .cnn)
+        case .fox: FeedWidget(source: .fox)
+        case .redAlert: IsraelRedAlertWidget()
         case .whatsapp: EmbeddedWebView(
             source: .url(URL(string: "https://web.whatsapp.com")!),
             allowedHosts: ["whatsapp.com", "whatsapp.net"],
@@ -27,7 +30,10 @@ struct WidgetContent: View {
             allowedHosts: ["youtube.com", "google.com", "googleusercontent.com", "gstatic.com"],
             pageZoom: 0.75
         )
-        case .liveTV: LiveTVWidget()
+        case .liveTV11: LiveTVWidget(channel: "11", label: "Channel 11")
+        case .liveTV: LiveTVWidget(channel: "12", label: "Channel 12")
+        case .liveTV13: LiveTVWidget(channel: "13", label: "Channel 13")
+        case .liveTVCNN: LiveTVWidget(channel: "cnn", label: "CNN")
         case .radio: RadioWidget()
         }
     }
@@ -612,12 +618,32 @@ private struct WeatherWidget: View {
 }
 
 private struct FeedWidget: View {
-    enum Source { case ynet, rotter }
+    enum Source {
+        case ynet, rotter, cnn, fox
+
+        var isRTL: Bool {
+            self == .ynet || self == .rotter
+        }
+
+        var color: Color {
+            switch self {
+            case .ynet: .pink
+            case .rotter: .yellow
+            case .cnn: Color(red: 0.88, green: 0.12, blue: 0.16)
+            case .fox: Color(red: 0.20, green: 0.48, blue: 0.95)
+            }
+        }
+    }
     @EnvironmentObject private var model: DashboardModel
     let source: Source
 
     private var items: [FeedItem] {
-        source == .ynet ? model.ynetItems : model.rotterItems
+        switch source {
+        case .ynet: model.ynetItems
+        case .rotter: model.rotterItems
+        case .cnn: model.cnnItems
+        case .fox: model.foxItems
+        }
     }
 
     var body: some View {
@@ -631,26 +657,46 @@ private struct FeedWidget: View {
                             if let link = item.link { model.open(link) }
                         } label: {
                             HStack(alignment: .top, spacing: 10) {
-                                VStack(alignment: .trailing, spacing: 4) {
+                                if !source.isRTL {
+                                    Circle()
+                                        .fill(source.color)
+                                        .frame(width: 5, height: 5)
+                                        .padding(.top, 6)
+                                }
+                                VStack(
+                                    alignment: source.isRTL ? .trailing : .leading,
+                                    spacing: 4
+                                ) {
                                     Text(item.title)
                                         .font(.system(size: 12.5, weight: .medium))
-                                        .multilineTextAlignment(.trailing)
+                                        .multilineTextAlignment(source.isRTL ? .trailing : .leading)
                                         .lineLimit(3)
-                                        .frame(maxWidth: .infinity, alignment: .trailing)
+                                        .frame(
+                                            maxWidth: .infinity,
+                                            alignment: source.isRTL ? .trailing : .leading
+                                        )
                                     Text(feedTime(item.date))
                                         .font(.system(size: 9.5, weight: .medium, design: .rounded))
                                         .foregroundStyle(.tertiary)
                                         .monospacedDigit()
-                                        .frame(maxWidth: .infinity, alignment: .trailing)
+                                        .frame(
+                                            maxWidth: .infinity,
+                                            alignment: source.isRTL ? .trailing : .leading
+                                        )
                                 }
-                                Circle()
-                                    .fill(source == .ynet ? Color.pink : Color.yellow)
-                                    .frame(width: 5, height: 5)
-                                    .padding(.top, 6)
+                                if source.isRTL {
+                                    Circle()
+                                        .fill(source.color)
+                                        .frame(width: 5, height: 5)
+                                        .padding(.top, 6)
+                                }
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: source.isRTL ? .trailing : .leading
+                            )
                             .contentShape(Rectangle())
                             .environment(\.layoutDirection, .leftToRight)
                         }
@@ -672,31 +718,109 @@ private struct FeedWidget: View {
     private func feedTime(_ date: Date?) -> String {
         guard let date else { return "—:—" }
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "he_IL")
-        formatter.timeZone = TimeZone(identifier: "Asia/Jerusalem")
+        formatter.locale = Locale(identifier: source.isRTL ? "he_IL" : "en_US_POSIX")
+        formatter.timeZone = TimeZone(
+            identifier: source.isRTL ? "Asia/Jerusalem" : "America/Chicago"
+        )
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
     }
 }
 
 private struct LiveTVWidget: View {
-    @State private var playerURL: URL?
+    let channel: String
+    let label: String
+    @State private var playerSource: LiveTVPlayerSource?
 
     var body: some View {
         Group {
-            if let playerURL {
-                EmbeddedWebView(
-                    source: .url(playerURL),
-                    allowedHosts: ["mako.co.il"],
-                    pageZoom: 1
-                )
+            if let playerSource {
+                switch playerSource {
+                case .web(let url):
+                    EmbeddedWebView(
+                        source: .url(url),
+                        allowedHosts: ["mako.co.il"],
+                        pageZoom: 1
+                    )
+                case .hls(let url):
+                    EmbeddedWebView(
+                        source: .html(Self.hlsPlayerHTML(url: url)),
+                        allowedHosts: [],
+                        pageZoom: 1
+                    )
+                }
             } else {
-                LoadingState(label: "Locating Channel 12 player…")
+                LoadingState(label: "Locating \(label) player…")
             }
         }
+        .id(channel)
         .task {
-            playerURL = await DataService.fetchLiveTVPlayerURL()
+            playerSource = await DataService.fetchLiveTVPlayerSource(channel: channel)
         }
+    }
+
+    private static func hlsPlayerHTML(url: URL) -> String {
+        """
+        <!doctype html>
+        <html>
+        <head>
+          <meta name="color-scheme" content="dark">
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <style>
+            * { box-sizing: border-box; }
+            html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+            video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+          </style>
+        </head>
+        <body>
+          <video src="\(url.absoluteString)" controls autoplay muted playsinline></video>
+          <script>
+            const video = document.querySelector('video');
+            video.muted = true;
+            video.defaultMuted = true;
+            video.play().catch(() => {});
+          </script>
+        </body>
+        </html>
+        """
+    }
+}
+
+private struct IsraelRedAlertWidget: View {
+    private static let compactScript = """
+    (() => {
+      const applyWidgetLayout = () => {
+        if (document.getElementById('deskpulse-alert-style')) return;
+        const style = document.createElement('style');
+        style.id = 'deskpulse-alert-style';
+        style.textContent = `
+          html, body, #map { width: 100% !important; height: 100% !important; overflow: hidden !important; }
+          #menu {
+            top: 0 !important; left: 0 !important; bottom: 0 !important;
+            width: min(410px, 68vw) !important; height: 100vh !important;
+            border-radius: 0 !important; box-shadow: 5px 0 20px rgba(0,0,0,.45) !important;
+          }
+          #history { min-height: 270px !important; }
+          .leaflet-control-attribution { opacity: .45 !important; }
+          @media (max-width: 620px) {
+            #menu { width: 100vw !important; max-width: none !important; }
+          }
+        `;
+        document.head.appendChild(style);
+        window.dispatchEvent(new Event('resize'));
+      };
+      applyWidgetLayout();
+      setTimeout(applyWidgetLayout, 600);
+    })();
+    """
+
+    var body: some View {
+        EmbeddedWebView(
+            source: .url(URL(string: "https://www.tzevaadom.co.il/en/")!),
+            allowedHosts: ["tzevaadom.co.il", "google.com", "googleapis.com"],
+            pageZoom: 0.78,
+            userScript: Self.compactScript
+        )
     }
 }
 

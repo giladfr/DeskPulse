@@ -2,7 +2,11 @@ import Foundation
 import SwiftUI
 
 enum WidgetKind: String, Codable, CaseIterable, Identifiable {
-    case gmail, stocks, clocks, date, weather, ynet, rotter, whatsapp, youtubeMusic, liveTV, radio
+    case gmail, stocks, clocks, date, weather, ynet, rotter
+    case cnn, fox, redAlert
+    case whatsapp, youtubeMusic
+    case liveTV11, liveTV, liveTV13, liveTVCNN
+    case radio
 
     var id: String { rawValue }
 
@@ -15,9 +19,15 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .weather: "Austin weather"
         case .ynet: "Ynet"
         case .rotter: "Rotter סקופים"
+        case .cnn: "CNN · World"
+        case .fox: "Fox News · Latest"
+        case .redAlert: "Israel red alert"
         case .whatsapp: "WhatsApp"
         case .youtubeMusic: "YouTube Music"
+        case .liveTV11: "Live TV · Channel 11"
         case .liveTV: "Live TV · Channel 12"
+        case .liveTV13: "Live TV · Channel 13"
+        case .liveTVCNN: "CNN Live"
         case .radio: "Israeli radio"
         }
     }
@@ -31,9 +41,15 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .weather: "cloud.sun.fill"
         case .ynet: "newspaper.fill"
         case .rotter: "dot.radiowaves.left.and.right"
+        case .cnn: "globe.americas.fill"
+        case .fox: "bolt.fill"
+        case .redAlert: "exclamationmark.triangle.fill"
         case .whatsapp: "message.fill"
         case .youtubeMusic: "music.note"
+        case .liveTV11: "11.square.fill"
         case .liveTV: "tv.fill"
+        case .liveTV13: "13.square.fill"
+        case .liveTVCNN: "globe.americas.fill"
         case .radio: "radio.fill"
         }
     }
@@ -47,12 +63,23 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .weather: .orange
         case .ynet: .pink
         case .rotter: .yellow
+        case .cnn: Color(red: 0.88, green: 0.12, blue: 0.16)
+        case .fox: Color(red: 0.20, green: 0.48, blue: 0.95)
+        case .redAlert: Color(red: 1, green: 0.20, blue: 0.16)
         case .whatsapp: Color(red: 0.18, green: 0.82, blue: 0.47)
         case .youtubeMusic: .red
+        case .liveTV11: Color(red: 0.25, green: 0.75, blue: 0.95)
         case .liveTV: Color(red: 0.22, green: 0.65, blue: 1)
+        case .liveTV13: Color(red: 0.45, green: 0.42, blue: 1)
+        case .liveTVCNN: Color(red: 0.90, green: 0.12, blue: 0.15)
         case .radio: Color(red: 0.55, green: 0.42, blue: 1)
         }
     }
+}
+
+enum LiveTVPlayerSource: Equatable {
+    case web(URL)
+    case hls(URL)
 }
 
 struct DashboardWidget: Codable, Identifiable, Equatable {
@@ -67,6 +94,11 @@ struct DashboardWidget: Codable, Identifiable, Equatable {
 struct DashboardLayoutSnapshot: Codable, Equatable {
     let widgets: [DashboardWidget]
     let hiddenKinds: Set<WidgetKind>
+}
+
+enum DashboardLayoutSelection: Equatable {
+    case saved(Int)
+    case war
 }
 
 struct FeedItem: Identifiable, Equatable {
