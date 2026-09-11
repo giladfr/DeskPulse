@@ -28,6 +28,8 @@
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSPrefersDisplaySafeAreaCompatibilityMode</key>
+    <false/>
     <key>NSCameraUsageDescription</key>
     <string>DeskPulse uses camera access to display video from your USB HDMI capture card.</string>
 </dict>
