@@ -210,10 +210,15 @@ private struct CapturePreview: NSViewRepresentable {
 
     func updateNSView(_ view: PreviewView, context: Context) {
         view.previewLayer.videoGravity = fillsScreen ? .resizeAspectFill : .resizeAspect
+        // The CM629 pillarboxes a 1920×1200 HDMI signal inside its 16:9 UVC
+        // frame. A little overscan in Fill mode removes that embedded matte.
+        view.overscan = fillsScreen ? 0.04 : 0
+        view.needsLayout = true
     }
 
     final class PreviewView: NSView {
         let previewLayer = AVCaptureVideoPreviewLayer()
+        var overscan: CGFloat = 0
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -226,7 +231,10 @@ private struct CapturePreview: NSViewRepresentable {
 
         override func layout() {
             super.layout()
-            previewLayer.frame = bounds
+            previewLayer.frame = bounds.insetBy(
+                dx: -(bounds.width * overscan),
+                dy: -(bounds.height * overscan)
+            )
         }
     }
 }
