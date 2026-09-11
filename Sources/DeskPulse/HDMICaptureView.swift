@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import CoreMedia
+import CoreImage
 import SwiftUI
 
 @MainActor
@@ -130,14 +131,27 @@ struct HDMICaptureView: View {
     @ObservedObject var model: HDMICaptureModel
     let onExit: () -> Void
     @State private var fillsScreen = false
+    @State private var enhancesColor = true
     @State private var controlsVisible = true
 
     var body: some View {
         GeometryReader { proxy in
             ZStack {
                 Color.black
-                CapturePreview(session: model.session, fillsScreen: fillsScreen)
-                    .ignoresSafeArea()
+                CapturePreview(
+                    session: model.session,
+                    fillsScreen: fillsScreen,
+                    enhancesColor: enhancesColor
+                )
+                .frame(
+                    width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+                    height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+                )
+                .offset(
+                    x: (proxy.safeAreaInsets.trailing - proxy.safeAreaInsets.leading) / 2,
+                    y: (proxy.safeAreaInsets.bottom - proxy.safeAreaInsets.top) / 2
+                )
+                .ignoresSafeArea()
 
                 if case .unavailable(let message) = model.state {
                     ContentUnavailableView("HDMI input unavailable", systemImage: "video.slash.fill", description: Text(message))
@@ -188,6 +202,12 @@ struct HDMICaptureView: View {
                     )
                 }
                 .help(fillsScreen ? "Fill the Mac display by cropping the HDMI image's sides" : "Preserve the entire HDMI image without cropping")
+                Button {
+                    enhancesColor.toggle()
+                } label: {
+                    Label(enhancesColor ? "Vivid" : "Natural", systemImage: "circle.lefthalf.filled")
+                }
+                .help(enhancesColor ? "Subtle contrast and saturation correction is on" : "Show the capture card's unadjusted colors")
             }
             .font(.system(size: 13, weight: .semibold))
             .buttonStyle(.borderedProminent)
@@ -201,6 +221,7 @@ struct HDMICaptureView: View {
 private struct CapturePreview: NSViewRepresentable {
     let session: AVCaptureSession
     let fillsScreen: Bool
+    let enhancesColor: Bool
 
     func makeNSView(context: Context) -> PreviewView {
         let view = PreviewView()
@@ -213,6 +234,15 @@ private struct CapturePreview: NSViewRepresentable {
         // The CM629 pillarboxes a 1920×1200 HDMI signal inside its 16:9 UVC
         // frame. A little overscan in Fill mode removes that embedded matte.
         view.overscan = fillsScreen ? 0.04 : 0
+        if enhancesColor {
+            let color = CIFilter(name: "CIColorControls")
+            color?.setValue(1.08, forKey: kCIInputSaturationKey)
+            color?.setValue(1.04, forKey: kCIInputContrastKey)
+            color?.setValue(-0.005, forKey: kCIInputBrightnessKey)
+            view.previewLayer.filters = color.map { [$0] } ?? []
+        } else {
+            view.previewLayer.filters = []
+        }
         view.needsLayout = true
     }
 
