@@ -65,8 +65,8 @@ song recognition with prominent album art.
 - The **lock** button locks the Mac. The sleep button toggles display sleep
   prevention while DeskPulse is running.
 - Press **Control–Command–F** for full screen.
-- Use the overlapping-displays button for HDMI capture. Press **Escape** to return,
-  or launch **DeskPulse HDMI** from Applications to enter capture directly.
+- Use the overlapping-displays button for HDMI capture. Press **Escape** to return
+  to the dashboard.
 
 ## Build it
 
@@ -82,7 +82,7 @@ open /Applications/DeskPulse.app
 ```
 
 `build-app.sh` creates a local song-recognition helper on first use, assembles the
-app and its direct HDMI launcher, and installs both in `/Applications`. It uses the
+app and installs it in `/Applications`. It uses the
 DeskPulse development signing identity when available and otherwise signs ad hoc.
 To choose a stable identity explicitly—which helps WebKit and Keychain recognize
 rebuilt copies as the same app—set it when building:

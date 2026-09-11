@@ -129,7 +129,7 @@ final class HDMICaptureModel: ObservableObject {
 struct HDMICaptureView: View {
     @ObservedObject var model: HDMICaptureModel
     let onExit: () -> Void
-    @State private var fillsScreen = true
+    @State private var fillsScreen = false
     @State private var controlsVisible = true
 
     var body: some View {
@@ -182,9 +182,12 @@ struct HDMICaptureView: View {
                 Button {
                     fillsScreen.toggle()
                 } label: {
-                    Label(fillsScreen ? "Fill" : "Fit", systemImage: fillsScreen ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                    Label(
+                        fillsScreen ? "Fill · crops edges" : "Fit · entire screen",
+                        systemImage: fillsScreen ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left"
+                    )
                 }
-                .help(fillsScreen ? "Fill the screen (may crop edges)" : "Show the entire HDMI image")
+                .help(fillsScreen ? "Fill the Mac display by cropping the HDMI image's sides" : "Preserve the entire HDMI image without cropping")
             }
             .font(.system(size: 13, weight: .semibold))
             .buttonStyle(.borderedProminent)

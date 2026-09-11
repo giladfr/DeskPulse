@@ -6,7 +6,7 @@ struct DashboardView: View {
     @State private var savedSlotFeedback: Int?
     @State private var warSavedFeedback = false
     @State private var hoveredWidgetKind: WidgetKind?
-    @State private var showsHDMICapture = ProcessInfo.processInfo.arguments.contains("--hdmi")
+    @State private var showsHDMICapture = false
     @StateObject private var hdmiCapture = HDMICaptureModel()
 
     var body: some View {
@@ -29,6 +29,8 @@ struct DashboardView: View {
             }
         }
         .onAppear {
+            // HDMI is an in-app workspace, never a restored launch destination.
+            showsHDMICapture = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 guard let window = NSApplication.shared.keyWindow,
                       !window.styleMask.contains(.fullScreen) else { return }
@@ -40,10 +42,6 @@ struct DashboardView: View {
             withAnimation(.snappy(duration: 0.45)) {
                 model.activateWarLayout(in: canvasSize)
             }
-        }
-        .onOpenURL { url in
-            guard url.scheme == "deskpulse", url.host == "hdmi" else { return }
-            showsHDMICapture = true
         }
     }
 
