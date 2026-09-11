@@ -233,7 +233,7 @@ private struct CapturePreview: NSViewRepresentable {
             super.layout()
             previewLayer.frame = bounds.insetBy(
                 dx: -(bounds.width * overscan),
-                dy: -(bounds.height * overscan)
+                dy: 0
             )
         }
     }
