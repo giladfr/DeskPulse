@@ -6,8 +6,48 @@ struct DashboardView: View {
     @State private var savedSlotFeedback: Int?
     @State private var warSavedFeedback = false
     @State private var hoveredWidgetKind: WidgetKind?
+    @State private var showsHDMICapture = ProcessInfo.processInfo.arguments.contains("--hdmi")
+    @StateObject private var hdmiCapture = HDMICaptureModel()
 
     var body: some View {
+        Group {
+            if showsHDMICapture {
+                HDMICaptureView(model: hdmiCapture) {
+                    showsHDMICapture = false
+                }
+            } else {
+                dashboard
+            }
+        }
+        .background(Color.black)
+        .ignoresSafeArea()
+        .task(id: showsHDMICapture) {
+            if showsHDMICapture {
+                model.stopRefreshing()
+            } else {
+                model.start()
+            }
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard let window = NSApplication.shared.keyWindow,
+                      !window.styleMask.contains(.fullScreen) else { return }
+                window.toggleFullScreen(nil)
+            }
+        }
+        .onChange(of: model.warActivationRequest) { _, request in
+            guard request > 0, model.activeLayout != .war else { return }
+            withAnimation(.snappy(duration: 0.45)) {
+                model.activateWarLayout(in: canvasSize)
+            }
+        }
+        .onOpenURL { url in
+            guard url.scheme == "deskpulse", url.host == "hdmi" else { return }
+            showsHDMICapture = true
+        }
+    }
+
+    private var dashboard: some View {
         ZStack(alignment: .topLeading) {
             background
             header
@@ -39,20 +79,6 @@ struct DashboardView: View {
             .padding(.top, 68)
         }
         .ignoresSafeArea()
-        .task { model.start() }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard let window = NSApplication.shared.keyWindow,
-                      !window.styleMask.contains(.fullScreen) else { return }
-                window.toggleFullScreen(nil)
-            }
-        }
-        .onChange(of: model.warActivationRequest) { _, request in
-            guard request > 0, model.activeLayout != .war else { return }
-            withAnimation(.snappy(duration: 0.45)) {
-                model.activateWarLayout(in: canvasSize)
-            }
-        }
     }
 
     private var background: some View {
@@ -136,6 +162,14 @@ struct DashboardView: View {
                         ? "Incoming alert detection is on — new Rotter “צבע אדום” alerts activate the situation layout"
                         : "Incoming alert detection is off"
                 )
+
+                Button {
+                    showsHDMICapture = true
+                } label: {
+                    Image(systemName: "rectangle.on.rectangle.angled")
+                }
+                .buttonStyle(HeaderButtonStyle())
+                .help("Open UGREEN HDMI input full screen")
             }
             Spacer()
             HStack(spacing: 5) {

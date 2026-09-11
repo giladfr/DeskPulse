@@ -3,12 +3,18 @@ set -euo pipefail
 
 project_dir=${0:A:h}
 bundle_identifier=${DESKPULSE_BUNDLE_ID:-com.giladfride.DeskPulse}
-signing_identity=${DESKPULSE_SIGNING_IDENTITY:--}
+default_signing_identity="-"
+if security find-identity -v -p codesigning | grep -Fq '"OfficeDashboard Local Signing"'; then
+  default_signing_identity="OfficeDashboard Local Signing"
+fi
+signing_identity=${DESKPULSE_SIGNING_IDENTITY:-$default_signing_identity}
 staging_dir=$(mktemp -d)
 trap 'rm -rf "$staging_dir"' EXIT
 app_dir="$staging_dir/DeskPulse.app"
 installed_app="/Applications/DeskPulse.app"
+installed_hdmi_launcher="/Applications/DeskPulse HDMI.app"
 legacy_installed_app="/Applications/OfficeDashboard.app"
+hdmi_launcher_dir="$staging_dir/DeskPulse HDMI.app"
 
 cd "$project_dir"
 swift build -c release
@@ -53,4 +59,19 @@ if [[ -e "$legacy_installed_app" ]]; then
 fi
 ditto "$app_dir" "$installed_app"
 codesign --verify --deep --strict "$installed_app"
+osacompile -o "$hdmi_launcher_dir" "$project_dir/Packaging/DeskPulse HDMI.applescript"
+cp "$project_dir/Packaging/AppIcon.icns" "$hdmi_launcher_dir/Contents/Resources/AppIcon.icns"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$hdmi_launcher_dir/Contents/Info.plist" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$hdmi_launcher_dir/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string DeskPulse HDMI" "$hdmi_launcher_dir/Contents/Info.plist" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName DeskPulse HDMI" "$hdmi_launcher_dir/Contents/Info.plist"
+xattr -cr "$hdmi_launcher_dir"
+codesign --force --deep --timestamp=none --sign "$signing_identity" "$hdmi_launcher_dir"
+if [[ -e "$installed_hdmi_launcher" ]]; then
+  previous_hdmi_launcher="$HOME/.Trash/DeskPulse-HDMI-previous-$(date +%Y%m%d-%H%M%S).app"
+  mv "$installed_hdmi_launcher" "$previous_hdmi_launcher"
+fi
+ditto "$hdmi_launcher_dir" "$installed_hdmi_launcher"
+codesign --verify --deep --strict "$installed_hdmi_launcher"
 echo "$installed_app"
+echo "$installed_hdmi_launcher"

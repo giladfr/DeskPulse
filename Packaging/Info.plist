@@ -22,11 +22,24 @@
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>DeskPulse</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>deskpulse</string>
+            </array>
+        </dict>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>DeskPulse uses camera access to display video from your USB HDMI capture card.</string>
 </dict>
 </plist>

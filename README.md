@@ -35,6 +35,9 @@ the information I actually want in front of me.
   player, and timers instead of merely hiding pixels.
 - **Built for a permanent display.** Full screen, dark, dense, fluid, and quick to
   lock or keep awake from the top bar.
+- **A second laptop, one keystroke away.** A native, low-latency UVC/HDMI mode
+  fills the Mac display from a capture card without routing video through a web
+  view. Fit/Fill is switchable, and leaving the viewer releases the camera.
 
 ## Widgets
 
@@ -62,6 +65,8 @@ song recognition with prominent album art.
 - The **lock** button locks the Mac. The sleep button toggles display sleep
   prevention while DeskPulse is running.
 - Press **Control–Command–F** for full screen.
+- Use the overlapping-displays button for HDMI capture. Press **Escape** to return,
+  or launch **DeskPulse HDMI** from Applications to enter capture directly.
 
 ## Build it
 
@@ -77,9 +82,10 @@ open /Applications/DeskPulse.app
 ```
 
 `build-app.sh` creates a local song-recognition helper on first use, assembles the
-app, signs it ad hoc, and installs it in `/Applications`. To use a stable local
-code-signing identity—which helps WebKit and Keychain recognize rebuilt copies as
-the same app—set it explicitly:
+app and its direct HDMI launcher, and installs both in `/Applications`. It uses the
+DeskPulse development signing identity when available and otherwise signs ad hoc.
+To choose a stable identity explicitly—which helps WebKit and Keychain recognize
+rebuilt copies as the same app—set it when building:
 
 ```sh
 DESKPULSE_SIGNING_IDENTITY="Apple Development: Your Name" ./build-app.sh
