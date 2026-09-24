@@ -92,6 +92,13 @@ struct DashboardView: View {
         }
     }
 
+    private var refreshHelp: String {
+        if model.isRefreshing { return "Refreshing news and weather…" }
+        let base = "Refresh news and weather now (they also refresh every 2 minutes)"
+        guard let lastRefresh = model.lastRefresh else { return base }
+        return "\(base) · last updated \(lastRefresh.formatted(date: .omitted, time: .shortened))"
+    }
+
     private var header: some View {
         HStack(spacing: 14) {
             Image(systemName: "square.grid.2x2.fill")
@@ -214,16 +221,16 @@ struct DashboardView: View {
             Button {
                 Task { await model.refresh() }
             } label: {
+                // Dimmed rather than spun while refreshing: a repeat-forever rotation
+                // also animated every layout shift, so the icon drifted out of its
+                // pill and flickered.
                 Image(systemName: "arrow.clockwise")
-                    .rotationEffect(.degrees(model.isRefreshing ? 360 : 0))
-                    .animation(
-                        model.isRefreshing
-                            ? .linear(duration: 1).repeatForever(autoreverses: false)
-                            : .default,
-                        value: model.isRefreshing
-                    )
+                    .opacity(model.isRefreshing ? 0.35 : 1)
+                    .animation(.easeInOut(duration: 0.2), value: model.isRefreshing)
             }
             .buttonStyle(HeaderButtonStyle())
+            .disabled(model.isRefreshing)
+            .help(refreshHelp)
             Button {
                 withAnimation(.snappy(duration: 0.35)) {
                     model.autoArrange(in: canvasSize)
