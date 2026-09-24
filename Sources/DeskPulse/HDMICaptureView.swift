@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreMedia
 import CoreImage
+import OSLog
 import SwiftUI
 
 @MainActor
@@ -19,11 +20,11 @@ final class HDMICaptureModel: ObservableObject {
     private let queue = DispatchQueue(label: "com.giladfride.DeskPulse.hdmi-capture", qos: .userInteractive)
     private var configuredDeviceID: String?
 
-    func start(targetSize: CGSize) {
+    func start() {
         guard state != .requestingPermission else { return }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            configureAndStart(targetSize: targetSize)
+            configureAndStart()
         case .notDetermined:
             state = .requestingPermission
             NSApplication.shared.activate(ignoringOtherApps: true)
@@ -31,7 +32,7 @@ final class HDMICaptureModel: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     if allowed {
-                        self.configureAndStart(targetSize: targetSize)
+                        self.configureAndStart()
                     } else {
                         self.state = .unavailable("Camera access is required for the HDMI capture card.")
                     }
@@ -50,7 +51,7 @@ final class HDMICaptureModel: ObservableObject {
         state = .idle
     }
 
-    private func configureAndStart(targetSize: CGSize) {
+    private func configureAndStart() {
         state = .connecting
         let session = session
         let previousID = configuredDeviceID
@@ -72,27 +73,33 @@ final class HDMICaptureModel: ObservableObject {
                     session.beginConfiguration()
                     defer { session.commitConfiguration() }
                     session.inputs.forEach(session.removeInput)
-                    if session.canSetSessionPreset(.high) {
-                        session.sessionPreset = .high
-                    }
                     let input = try AVCaptureDeviceInput(device: device)
                     guard session.canAddInput(input) else {
                         throw CaptureError.cannotAddInput
                     }
                     session.addInput(input)
-                    let format = Self.bestFormat(for: device, targetSize: targetSize)
-                    try device.lockForConfiguration()
-                    if let format {
-                        device.activeFormat = format
-                    }
-                    device.unlockForConfiguration()
                 }
+
+                guard let choice = Self.bestFormat(for: device) else {
+                    throw CaptureError.noVideoFormat
+                }
+                // On macOS the session may re-apply its own format when it starts.
+                // Holding the configuration lock across startRunning keeps ours, and
+                // it is re-applied on every start because a stop can reset it too.
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                device.activeFormat = choice.format
+                device.activeVideoMinFrameDuration = choice.frameDuration
+                device.activeVideoMaxFrameDuration = choice.frameDuration
                 if !session.isRunning { session.startRunning() }
-                let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                let fps = Self.preferredFPS(for: device.activeFormat)
+
+                // Report what the device is actually running, not what was requested.
+                let active = device.activeFormat
+                let summary = Self.describe(active, frameDuration: device.activeVideoMinFrameDuration)
+                Self.logger.info("HDMI capture: \(device.localizedName, privacy: .public) running \(summary, privacy: .public)")
                 Task { @MainActor in
                     self?.configuredDeviceID = device.uniqueID
-                    self?.state = .live(device.localizedName, "\(dimensions.width)×\(dimensions.height) · \(fps) fps")
+                    self?.state = .live(device.localizedName, summary)
                 }
             } catch {
                 Task { @MainActor in self?.state = .unavailable("Could not start \(device.localizedName): \(error.localizedDescription)") }
@@ -100,30 +107,97 @@ final class HDMICaptureModel: ObservableObject {
         }
     }
 
-    nonisolated private static func bestFormat(for device: AVCaptureDevice, targetSize: CGSize) -> AVCaptureDevice.Format? {
-        let targetAspect = max(targetSize.width, 1) / max(targetSize.height, 1)
-        return device.formats.max { lhs, rhs in
-            formatScore(lhs, targetAspect: targetAspect) < formatScore(rhs, targetAspect: targetAspect)
+    private struct FormatChoice {
+        let format: AVCaptureDevice.Format
+        let frameDuration: CMTime
+    }
+
+    nonisolated private static let logger = Logger(
+        subsystem: "com.giladfride.DeskPulse",
+        category: "HDMICapture"
+    )
+
+    /// HDMI sources rarely exceed 60 Hz, and faster UVC modes usually trade away resolution.
+    nonisolated private static let maximumFrameRate = 60.0
+
+    /// Ranks modes by smoothness first, then resolution, then image quality:
+    /// a 60 fps mode beats any 30 fps one, a larger frame beats a smaller one at the
+    /// same rate, and uncompressed video beats MJPEG at the same size and rate.
+    nonisolated private static func bestFormat(for device: AVCaptureDevice) -> FormatChoice? {
+        let candidates = device.formats.compactMap { format -> (FormatChoice, (Int, Int, Int))? in
+            guard let duration = frameDuration(for: format) else { return nil }
+            let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let fps = framesPerSecond(duration)
+            let smoothness = fps >= 59 ? 2 : fps >= 29 ? 1 : 0
+            let pixels = Int(size.width) * Int(size.height)
+            let uncompressed = isCompressed(format) ? 0 : 1
+            return (FormatChoice(format: format, frameDuration: duration), (smoothness, pixels, uncompressed))
         }
+        for (choice, _) in candidates {
+            logger.debug("HDMI capture mode available: \(describe(choice.format, frameDuration: choice.frameDuration), privacy: .public)")
+        }
+        return candidates.max { $0.1 < $1.1 }?.0
     }
 
-    nonisolated private static func formatScore(_ format: AVCaptureDevice.Format, targetAspect: CGFloat) -> Double {
+    /// The fastest frame duration the format supports without exceeding `maximumFrameRate`.
+    nonisolated private static func frameDuration(for format: AVCaptureDevice.Format) -> CMTime? {
+        let ranges = format.videoSupportedFrameRateRanges
+        if let fastest = ranges
+            .filter({ $0.maxFrameRate <= maximumFrameRate + 0.5 })
+            .max(by: { $0.maxFrameRate < $1.maxFrameRate }) {
+            // Use the range's own duration so 59.94 Hz modes stay exact.
+            return fastest.minFrameDuration
+        }
+        if ranges.contains(where: { $0.minFrameRate <= maximumFrameRate }) {
+            return CMTime(value: 1, timescale: CMTimeScale(maximumFrameRate))
+        }
+        return ranges.min(by: { $0.maxFrameRate < $1.maxFrameRate })?.minFrameDuration
+    }
+
+    nonisolated private static func framesPerSecond(_ duration: CMTime) -> Double {
+        let seconds = CMTimeGetSeconds(duration)
+        return seconds > 0 ? 1 / seconds : 0
+    }
+
+    nonisolated private static func isCompressed(_ format: AVCaptureDevice.Format) -> Bool {
+        let compressedCodecs: Set<FourCharCode> = [
+            kCMVideoCodecType_JPEG,
+            kCMVideoCodecType_JPEG_OpenDML,
+            kCMVideoCodecType_H264,
+            kCMVideoCodecType_HEVC
+        ]
+        return compressedCodecs.contains(
+            CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        )
+    }
+
+    nonisolated private static func describe(
+        _ format: AVCaptureDevice.Format,
+        frameDuration: CMTime
+    ) -> String {
         let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-        let aspect = Double(size.width) / Double(max(size.height, 1))
-        let aspectPenalty = abs(aspect - Double(targetAspect)) * 12_000_000
-        let pixels = Double(size.width * size.height)
-        let fps = Double(preferredFPS(for: format))
-        return pixels + min(fps, 60) * 100_000 - aspectPenalty
-    }
-
-    nonisolated private static func preferredFPS(for format: AVCaptureDevice.Format) -> Int32 {
-        let maximum = format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 30
-        return Int32(maximum >= 60 ? 60 : maximum >= 30 ? 30 : max(1, Int(maximum)))
+        let fps = framesPerSecond(frameDuration)
+        let rate = abs(fps - fps.rounded()) < 0.01
+            ? String(Int(fps.rounded()))
+            : String(format: "%.2f", fps)
+        let code = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        let fourCC = String([24, 16, 8, 0].map {
+            Character(UnicodeScalar(UInt8(truncatingIfNeeded: code >> $0)))
+        })
+        let encoding = isCompressed(format) ? "compressed" : "uncompressed"
+        return "\(size.width)×\(size.height) · \(rate) fps · \(encoding) (\(fourCC))"
     }
 
     private enum CaptureError: LocalizedError {
         case cannotAddInput
-        var errorDescription: String? { "The capture input is not supported by this session." }
+        case noVideoFormat
+
+        var errorDescription: String? {
+            switch self {
+            case .cannotAddInput: "The capture input is not supported by this session."
+            case .noVideoFormat: "The capture card did not report a usable video mode."
+            }
+        }
     }
 }
 
@@ -172,7 +246,7 @@ struct HDMICaptureView: View {
             .onHover { hovering in
                 withAnimation(.easeOut(duration: 0.16)) { controlsVisible = hovering }
             }
-            .onAppear { model.start(targetSize: proxy.size) }
+            .onAppear { model.start() }
             .onDisappear { model.stop() }
         }
         .background(Color.black)
