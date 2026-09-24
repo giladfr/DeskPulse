@@ -24,6 +24,8 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var hasSavedWarLayout: Bool
     @Published private(set) var incomingAlertDetectionEnabled: Bool
     @Published private(set) var warActivationRequest = 0
+    /// The most recent alert the rule caught, shown on screens other than the dashboard.
+    @Published private(set) var latestIncomingAlert: IncomingAlert?
 
     private let storageKey = "dashboard.widgets.v2"
     private let hiddenStorageKey = "dashboard.hidden-widgets.v1"
@@ -653,20 +655,24 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    private func processIncomingAlertRule(_ items: [FeedItem]) {
+    func processIncomingAlertRule(_ items: [FeedItem]) {
         let currentIDs = Set(items.map(\.id))
         defer { knownRotterItemIDs = currentIDs }
         guard
             incomingAlertDetectionEnabled,
-            activeLayout != .war,
             let knownRotterItemIDs
         else { return }
 
         let newItems = items.filter { !knownRotterItemIDs.contains($0.id) }
-        guard newItems.contains(where: {
+        guard let alert = newItems.first(where: {
             Self.containsIncomingRocketAlert($0.title)
         }) else { return }
-        warActivationRequest &+= 1
+        // Recorded even when the situation layout is already up, so other screens
+        // (such as the HDMI screen in its own Space) still hear about new alerts.
+        latestIncomingAlert = IncomingAlert(title: alert.title, receivedAt: Date())
+        if activeLayout != .war {
+            warActivationRequest &+= 1
+        }
     }
 
     static func containsIncomingRocketAlert(_ title: String) -> Bool {

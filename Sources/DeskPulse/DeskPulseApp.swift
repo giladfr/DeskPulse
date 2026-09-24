@@ -30,6 +30,7 @@ struct DeskPulseApp: App {
 
         Window("HDMI Input", id: HDMIWindow.id) {
             HDMIWindowView()
+                .environmentObject(model)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 640, minHeight: 360)
         }
