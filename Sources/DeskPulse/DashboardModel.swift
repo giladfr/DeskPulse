@@ -6,7 +6,6 @@ import IOKit.pwr_mgt
 @MainActor
 final class DashboardModel: ObservableObject {
     @Published var widgets: [DashboardWidget]
-    @Published var quotes: [Quote] = []
     @Published var weather: WeatherSnapshot?
     @Published var ynetItems: [FeedItem] = []
     @Published var rotterItems: [FeedItem] = []
@@ -14,9 +13,10 @@ final class DashboardModel: ObservableObject {
     @Published var foxItems: [FeedItem] = []
     @Published var lastRefresh: Date?
     @Published var isRefreshing = false
-    @Published var stockSymbols: [StockSymbol]
     @Published var needsInitialArrange = false
-    @Published private(set) var hiddenKinds: Set<WidgetKind>
+    @Published private(set) var hiddenKinds: Set<WidgetKind> {
+        didSet { refreshIfDataWidgetsAppeared(previouslyHidden: oldValue) }
+    }
     @Published private(set) var savedLayoutSlots: Set<Int> = []
     @Published private(set) var snapsToGrid: Bool
     @Published private(set) var preventsSleep = false
@@ -26,7 +26,6 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var warActivationRequest = 0
 
     private let storageKey = "dashboard.widgets.v2"
-    private let stocksStorageKey = "dashboard.stocks.v1"
     private let hiddenStorageKey = "dashboard.hidden-widgets.v1"
     private let layoutStoragePrefix = "dashboard.saved-layout.v1."
     private let snapToGridStorageKey = "dashboard.snap-to-grid.v1"
@@ -34,108 +33,83 @@ final class DashboardModel: ObservableObject {
     private let warLayoutStorageKey = "dashboard.war-layout.v1"
     private let incomingAlertDetectionStorageKey =
         "dashboard.incoming-alert-detection.v1"
+    private let compactAMDStorageKey = "dashboard.compact-amd-widget.v1"
+    private let compactRowSizeStorageKey = "dashboard.compact-row-size.v3"
     private var refreshTask: Task<Void, Never>?
     private var sleepAssertionID = IOPMAssertionID(0)
     private var knownRotterItemIDs: Set<String>?
 
     init() {
-        incomingAlertDetectionEnabled = UserDefaults.standard.object(
-            forKey: "dashboard.incoming-alert-detection.v1"
+        let defaults = UserDefaults.standard
+        incomingAlertDetectionEnabled = defaults.object(
+            forKey: incomingAlertDetectionStorageKey
         ) as? Bool ?? true
-        hasSavedWarLayout = UserDefaults.standard.data(
-            forKey: "dashboard.war-layout.v1"
-        ) != nil
-        let storedActiveLayout = UserDefaults.standard.integer(
-            forKey: activeLayoutStorageKey
-        )
+        hasSavedWarLayout = defaults.data(forKey: warLayoutStorageKey) != nil
+        let storedActiveLayout = defaults.integer(forKey: activeLayoutStorageKey)
         if storedActiveLayout == 0,
-           UserDefaults.standard.object(forKey: activeLayoutStorageKey) != nil {
+           defaults.object(forKey: activeLayoutStorageKey) != nil {
             activeLayout = .war
         } else if (1...4).contains(storedActiveLayout) {
             activeLayout = .saved(storedActiveLayout)
         } else {
             activeLayout = nil
         }
-        snapsToGrid = UserDefaults.standard.object(
-            forKey: snapToGridStorageKey
-        ) as? Bool ?? true
-        let savedLayoutPrefix = "dashboard.saved-layout.v1."
-        savedLayoutSlots = Set((1...4).filter {
-            UserDefaults.standard.data(forKey: "\(savedLayoutPrefix)\($0)") != nil
-        })
-        if let rawValues = UserDefaults.standard.stringArray(forKey: hiddenStorageKey) {
+        snapsToGrid = defaults.object(forKey: snapToGridStorageKey) as? Bool ?? true
+        if let rawValues = defaults.stringArray(forKey: hiddenStorageKey) {
             hiddenKinds = Set(rawValues.compactMap(WidgetKind.init(rawValue:)))
         } else {
             hiddenKinds = []
         }
-        if let data = UserDefaults.standard.data(forKey: stocksStorageKey),
-           let saved = try? JSONDecoder().decode([StockSymbol].self, from: data),
-           !saved.isEmpty {
-            stockSymbols = saved
-        } else {
-            stockSymbols = StockSymbol.defaults
+        let storedWidgets = defaults.data(forKey: storageKey).flatMap {
+            try? JSONDecoder().decode([DashboardWidget].self, from: $0)
         }
-        if let data = UserDefaults.standard.data(forKey: storageKey),
-           let saved = try? JSONDecoder().decode([DashboardWidget].self, from: data) {
-            widgets = saved
-            if !widgets.contains(where: { $0.kind == .date }) {
-                widgets.append(DashboardWidget(
-                    id: UUID(), kind: .date, x: 16, y: 16,
-                    width: 280, height: 145
-                ))
-                needsInitialArrange = true
-                save()
-            }
-            if !widgets.contains(where: { $0.kind == .radio }) {
-                widgets.append(DashboardWidget(
-                    id: UUID(), kind: .radio, x: 16, y: 16,
-                    width: 460, height: 240
-                ))
-                needsInitialArrange = true
-                save()
-            }
-            let compactAMDKey = "dashboard.compact-amd-widget.v1"
-            if !UserDefaults.standard.bool(forKey: compactAMDKey),
-               let index = widgets.firstIndex(where: { $0.kind == .stocks }) {
-                widgets[index].width = min(widgets[index].width, 480)
-                widgets[index].height = 190
-                UserDefaults.standard.set(true, forKey: compactAMDKey)
-                save()
-            }
-            let alignedCompactRowKey = "dashboard.aligned-compact-row.v2"
-            if !UserDefaults.standard.bool(forKey: alignedCompactRowKey) {
-                let compactIndices = widgets.indices.filter {
-                    Self.compactTopRowKinds.contains(widgets[$0].kind)
-                }
-                if let topY = compactIndices.map({ widgets[$0].y }).min() {
-                    for index in compactIndices {
-                        widgets[index].y = topY
-                        widgets[index].height = Self.compactWidgetDefaultHeight
-                    }
-                    save()
-                }
-                UserDefaults.standard.set(true, forKey: alignedCompactRowKey)
-            }
-            let compactRowSizeKey = "dashboard.compact-row-size.v3"
-            if !UserDefaults.standard.bool(forKey: compactRowSizeKey) {
-                let compactIndices = widgets.indices.filter {
-                    Self.compactTopRowKinds.contains(widgets[$0].kind)
-                }
-                if let topY = compactIndices.map({ widgets[$0].y }).min() {
-                    for index in compactIndices {
-                        widgets[index].y = topY
-                        widgets[index].height = Self.compactWidgetDefaultHeight
-                    }
-                    save()
-                }
-                UserDefaults.standard.set(true, forKey: compactRowSizeKey)
-            }
+        widgets = storedWidgets ?? Self.defaultWidgets
+        savedLayoutSlots = Set((1...4).filter {
+            defaults.data(forKey: "\(layoutStoragePrefix)\($0)") != nil
+        })
+        if storedWidgets != nil {
+            migrateStoredWidgets()
         } else {
-            widgets = Self.defaultWidgets
-            UserDefaults.standard.set(true, forKey: "dashboard.compact-amd-widget.v1")
+            defaults.set(true, forKey: compactAMDStorageKey)
         }
         inferActiveSavedLayoutIfNeeded()
         ensureWidgetLibrary()
+    }
+
+    /// One-time upgrades for layouts saved by earlier versions.
+    private func migrateStoredWidgets() {
+        let defaults = UserDefaults.standard
+        var changed = false
+        for (kind, width, height) in [(WidgetKind.date, 280.0, 145.0), (.radio, 460, 240)]
+        where !widgets.contains(where: { $0.kind == kind }) {
+            widgets.append(DashboardWidget(
+                id: UUID(), kind: kind, x: 16, y: 16,
+                width: width, height: height
+            ))
+            needsInitialArrange = true
+            changed = true
+        }
+        if !defaults.bool(forKey: compactAMDStorageKey),
+           let index = widgets.firstIndex(where: { $0.kind == .stocks }) {
+            widgets[index].width = min(widgets[index].width, 480)
+            widgets[index].height = 190
+            defaults.set(true, forKey: compactAMDStorageKey)
+            changed = true
+        }
+        if !defaults.bool(forKey: compactRowSizeStorageKey) {
+            let compactIndices = widgets.indices.filter {
+                Self.compactTopRowKinds.contains(widgets[$0].kind)
+            }
+            if let topY = compactIndices.map({ widgets[$0].y }).min() {
+                for index in compactIndices {
+                    widgets[index].y = topY
+                    widgets[index].height = Self.compactWidgetDefaultHeight
+                }
+                changed = true
+            }
+            defaults.set(true, forKey: compactRowSizeStorageKey)
+        }
+        if changed { save() }
     }
 
     func start() {
@@ -149,40 +123,30 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    func stopRefreshing() {
-        refreshTask?.cancel()
-        refreshTask = nil
-    }
-
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        async let newQuotes = DataService.fetchQuotes()
-        async let newWeather = DataService.fetchWeather()
-        async let newYnet = DataService.fetchFeed(
-            URL(string: "https://www.ynet.co.il/Integration/StoryRss2.xml")!
-        )
-        async let newRotter = DataService.fetchFeed(
-            URL(string: "https://rotter.net/rss/rotternews.xml")!
-        )
-        async let newCNN = DataService.fetchFeed(
-            URL(string: "https://news.google.com/rss/search?q=when%3A1d%20source%3ACNN%20world&hl=en-US&gl=US&ceid=US%3Aen")!
-        )
-        async let newFox = DataService.fetchFeed(
-            URL(string: "https://moxie.foxnews.com/google-publisher/latest.xml")!
-        )
-        let results = await (
-            newQuotes, newWeather, newYnet, newRotter, newCNN, newFox
-        )
-        if !results.0.isEmpty { quotes = results.0 }
-        if let value = results.1 { weather = value }
-        if !results.2.isEmpty { ynetItems = results.2 }
-        if !results.3.isEmpty {
-            processIncomingAlertRule(results.3)
-            rotterItems = results.3
+        // Only fetch what an open widget shows. Rotter also feeds the
+        // incoming-alert rule, so it keeps refreshing while that rule is on.
+        let wantsWeather = isVisible(.weather)
+        let wantsYnet = isVisible(.ynet)
+        let wantsRotter = isVisible(.rotter) || incomingAlertDetectionEnabled
+        let wantsCNN = isVisible(.cnn)
+        let wantsFox = isVisible(.fox)
+        async let newWeather = Self.fetchWeather(if: wantsWeather)
+        async let newYnet = Self.fetchFeed(Self.ynetFeedURL, if: wantsYnet)
+        async let newRotter = Self.fetchFeed(Self.rotterFeedURL, if: wantsRotter)
+        async let newCNN = Self.fetchFeed(Self.cnnFeedURL, if: wantsCNN)
+        async let newFox = Self.fetchFeed(Self.foxFeedURL, if: wantsFox)
+        let results = await (newWeather, newYnet, newRotter, newCNN, newFox)
+        if let value = results.0 { weather = value }
+        if !results.1.isEmpty { ynetItems = results.1 }
+        if !results.2.isEmpty {
+            processIncomingAlertRule(results.2)
+            rotterItems = results.2
         }
-        if !results.4.isEmpty {
-            cnnItems = results.4.map {
+        if !results.3.isEmpty {
+            cnnItems = results.3.map {
                 FeedItem(
                     title: $0.title.replacingOccurrences(of: " - CNN", with: ""),
                     link: $0.link,
@@ -190,9 +154,35 @@ final class DashboardModel: ObservableObject {
                 )
             }
         }
-        if !results.5.isEmpty { foxItems = results.5 }
+        if !results.4.isEmpty { foxItems = results.4 }
         lastRefresh = Date()
         isRefreshing = false
+    }
+
+    nonisolated private static let ynetFeedURL = URL(string: "https://www.ynet.co.il/Integration/StoryRss2.xml")!
+    nonisolated private static let rotterFeedURL = URL(string: "https://rotter.net/rss/rotternews.xml")!
+    nonisolated private static let cnnFeedURL = URL(
+        string: "https://news.google.com/rss/search?q=when%3A1d%20source%3ACNN%20world&hl=en-US&gl=US&ceid=US%3Aen"
+    )!
+    nonisolated private static let foxFeedURL = URL(string: "https://moxie.foxnews.com/google-publisher/latest.xml")!
+    private static let dataBackedKinds: Set<WidgetKind> = [.weather, .ynet, .rotter, .cnn, .fox]
+
+    nonisolated private static func fetchWeather(if enabled: Bool) async -> WeatherSnapshot? {
+        enabled ? await DataService.fetchWeather() : nil
+    }
+
+    nonisolated private static func fetchFeed(_ url: URL, if enabled: Bool) async -> [FeedItem] {
+        enabled ? await DataService.fetchFeed(url) : []
+    }
+
+    /// Hidden widgets are not refreshed, so fetch right away when one reappears
+    /// instead of showing stale data until the next scheduled refresh.
+    private func refreshIfDataWidgetsAppeared(previouslyHidden: Set<WidgetKind>) {
+        guard
+            refreshTask != nil,
+            !previouslyHidden.subtracting(hiddenKinds).isDisjoint(with: Self.dataBackedKinds)
+        else { return }
+        Task { await refresh() }
     }
 
     func lockScreen() {
@@ -241,7 +231,9 @@ final class DashboardModel: ObservableObject {
             incomingAlertDetectionEnabled,
             forKey: incomingAlertDetectionStorageKey
         )
-        knownRotterItemIDs = Set(rotterItems.map(\.id))
+        // Rotter is only fetched while visible or while this rule is on, so its
+        // items may be stale; let the next fetch set a fresh baseline instead.
+        knownRotterItemIDs = nil
     }
 
     func update(_ widget: DashboardWidget) {
@@ -292,11 +284,6 @@ final class DashboardModel: ObservableObject {
             return
         }
         saveHiddenKinds()
-    }
-
-    func reset() {
-        widgets = Self.defaultWidgets
-        save()
     }
 
     func toggleSnapToGrid() {
@@ -432,25 +419,6 @@ final class DashboardModel: ObservableObject {
         save()
         saveHiddenKinds()
         setActiveLayout(.war)
-    }
-
-    func addStock(_ rawSymbol: String) {
-        var value = rawSymbol
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .uppercased()
-            .filter { $0.isLetter || $0.isNumber || ":._-".contains($0) }
-        guard !value.isEmpty else { return }
-        if !value.contains(":") { value = "NASDAQ:\(value)" }
-        guard !stockSymbols.contains(where: { $0.tradingViewSymbol == value }) else { return }
-        let label = value.split(separator: ":").last.map(String.init) ?? value
-        stockSymbols.append(.init(tradingViewSymbol: value, label: label))
-        saveStocks()
-    }
-
-    func removeStock(_ id: String) {
-        guard stockSymbols.count > 1 else { return }
-        stockSymbols.removeAll { $0.id == id }
-        saveStocks()
     }
 
     func autoArrange(in canvasSize: CGSize) {
@@ -593,27 +561,12 @@ final class DashboardModel: ObservableObject {
     }
 
     func open(_ url: URL) {
-        let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome")
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        if let chrome {
-            NSWorkspace.shared.open(
-                [url], withApplicationAt: chrome,
-                configuration: configuration
-            )
-        } else {
-            NSWorkspace.shared.open(url)
-        }
+        NSWorkspace.shared.open(url)
     }
 
     private func save() {
         guard let data = try? JSONEncoder().encode(widgets) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
-    }
-
-    private func saveStocks() {
-        guard let data = try? JSONEncoder().encode(stockSymbols) else { return }
-        UserDefaults.standard.set(data, forKey: stocksStorageKey)
     }
 
     private func saveHiddenKinds() {

@@ -92,70 +92,114 @@ private struct RecognizedTrack: Decodable, Sendable {
     let shazamURL: String?
 }
 
+/// Lets a `Process` be terminated from a task-cancellation handler.
+private final class ProcessHandle: @unchecked Sendable {
+    let process: Process
+
+    init(_ process: Process) {
+        self.process = process
+    }
+
+    func terminate() {
+        if process.isRunning { process.terminate() }
+    }
+}
+
 private enum ShazamIORecognizer {
+    /// GUI apps get a minimal PATH, so check the usual Homebrew and MacPorts
+    /// locations for both Apple silicon and Intel Macs before searching PATH.
+    static let ffmpegURL: URL? = {
+        let pathDirectories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        let directories = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+            + pathDirectories
+        return directories
+            .map { URL(fileURLWithPath: $0).appendingPathComponent("ffmpeg") }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }()
+
+    /// Cancelling the calling task terminates both helper processes.
     static func recognize(streamURL: URL) async -> RecognizedTrack? {
-        await Task.detached(priority: .utility) {
-            guard !Task.isCancelled else { return nil }
-            let fileManager = FileManager.default
-            let workDirectory = fileManager.temporaryDirectory
-                .appendingPathComponent("DeskPulse-Shazam-\(UUID().uuidString)")
-            let sampleURL = workDirectory.appendingPathComponent("sample.wav")
-            defer { try? fileManager.removeItem(at: workDirectory) }
+        guard !Task.isCancelled, let ffmpegURL else { return nil }
+        let fileManager = FileManager.default
+        let workDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("DeskPulse-Shazam-\(UUID().uuidString)")
+        let sampleURL = workDirectory.appendingPathComponent("sample.wav")
+        defer { try? fileManager.removeItem(at: workDirectory) }
 
-            do {
-                try fileManager.createDirectory(
-                    at: workDirectory,
-                    withIntermediateDirectories: true
-                )
+        do {
+            try fileManager.createDirectory(
+                at: workDirectory,
+                withIntermediateDirectories: true
+            )
 
-                let ffmpeg = Process()
-                ffmpeg.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-                ffmpeg.arguments = [
-                    "-nostdin", "-hide_banner", "-loglevel", "error",
-                    "-rw_timeout", "15000000",
-                    "-t", "10", "-i", streamURL.absoluteString,
-                    "-vn", "-ac", "1", "-ar", "44100",
-                    "-c:a", "pcm_s16le", "-y", sampleURL.path
-                ]
-                ffmpeg.standardOutput = FileHandle.nullDevice
-                ffmpeg.standardError = FileHandle.nullDevice
-                try ffmpeg.run()
-                ffmpeg.waitUntilExit()
-                guard
-                    ffmpeg.terminationStatus == 0,
-                    !Task.isCancelled,
-                    fileManager.fileExists(atPath: sampleURL.path)
-                else { return nil }
+            let ffmpeg = Process()
+            ffmpeg.executableURL = ffmpegURL
+            ffmpeg.arguments = [
+                "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-rw_timeout", "15000000",
+                "-t", "10", "-i", streamURL.absoluteString,
+                "-vn", "-ac", "1", "-ar", "44100",
+                "-c:a", "pcm_s16le", "-y", sampleURL.path
+            ]
+            ffmpeg.standardOutput = FileHandle.nullDevice
+            ffmpeg.standardError = FileHandle.nullDevice
+            guard
+                try await run(ffmpeg) == 0,
+                !Task.isCancelled,
+                fileManager.fileExists(atPath: sampleURL.path)
+            else { return nil }
 
-                let appHelper = Bundle.main.bundleURL
-                    .appendingPathComponent("Contents/Helpers/ShazamRecognizer")
-                let developmentHelper = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                    .appendingPathComponent("Tools/bin/ShazamRecognizer")
-                let helperURL = fileManager.isExecutableFile(atPath: appHelper.path)
-                    ? appHelper
-                    : developmentHelper
-                guard fileManager.isExecutableFile(atPath: helperURL.path) else { return nil }
+            let appHelper = Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Helpers/ShazamRecognizer")
+            let developmentHelper = URL(fileURLWithPath: fileManager.currentDirectoryPath)
+                .appendingPathComponent("Tools/bin/ShazamRecognizer")
+            let helperURL = fileManager.isExecutableFile(atPath: appHelper.path)
+                ? appHelper
+                : developmentHelper
+            guard fileManager.isExecutableFile(atPath: helperURL.path) else { return nil }
 
-                let recognizer = Process()
-                let output = Pipe()
-                recognizer.executableURL = helperURL
-                recognizer.arguments = [sampleURL.path]
-                recognizer.standardOutput = output
-                recognizer.standardError = FileHandle.nullDevice
-                try recognizer.run()
-                recognizer.waitUntilExit()
-                guard recognizer.terminationStatus == 0, !Task.isCancelled else { return nil }
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                let result = try JSONDecoder().decode(RecognizedTrack.self, from: data)
-                guard
-                    let title = result.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-                    !title.isEmpty
-                else { return nil }
-                return result
-            } catch {
-                return nil
+            let recognizer = Process()
+            let output = Pipe()
+            recognizer.executableURL = helperURL
+            recognizer.arguments = [sampleURL.path]
+            recognizer.standardOutput = output
+            recognizer.standardError = FileHandle.nullDevice
+            guard try await run(recognizer) == 0, !Task.isCancelled else { return nil }
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let result = try JSONDecoder().decode(RecognizedTrack.self, from: data)
+            guard
+                let title = result.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !title.isEmpty
+            else { return nil }
+            return result
+        } catch {
+            return nil
+        }
+    }
+
+    /// Runs a process without blocking a thread and terminates it on cancellation.
+    private static func run(_ process: Process) async throws -> Int32 {
+        let handle = ProcessHandle(process)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                handle.process.terminationHandler = { finished in
+                    continuation.resume(returning: finished.terminationStatus)
+                }
+                do {
+                    try handle.process.run()
+                } catch {
+                    handle.process.terminationHandler = nil
+                    continuation.resume(throwing: error)
+                    return
+                }
+                // Cancellation may have arrived before the process started.
+                if Task.isCancelled { handle.terminate() }
             }
-        }.value
+        } onCancel: {
+            handle.terminate()
+        }
     }
 }
 

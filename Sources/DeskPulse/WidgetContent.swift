@@ -475,67 +475,6 @@ private struct DateWidget: View {
     }
 }
 
-private struct StocksWidget: View {
-    @EnvironmentObject private var model: DashboardModel
-
-    var body: some View {
-        if model.quotes.isEmpty {
-            LoadingState(label: "Loading market data…")
-        } else {
-            VStack(spacing: 0) {
-                ForEach(model.quotes) { quote in
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(quote.symbol)
-                                .font(.system(size: quote.symbol == "AMD" ? 16 : 13, weight: .bold, design: .rounded))
-                            if quote.symbol == "AMD" {
-                                Text("Advanced Micro Devices")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(width: 105, alignment: .leading)
-                        Sparkline(points: quote.points, positive: quote.changePercent >= 0)
-                            .frame(maxWidth: .infinity, minHeight: 24)
-                        Text(quote.price, format: .number.precision(.fractionLength(2)))
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .frame(width: 70, alignment: .trailing)
-                        Text(quote.changePercent / 100, format: .percent.precision(.fractionLength(2)))
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(quote.changePercent >= 0 ? .green : .red)
-                            .frame(width: 62, alignment: .trailing)
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(maxHeight: .infinity)
-                    if quote.id != model.quotes.last?.id { Divider().opacity(0.16) }
-                }
-            }
-        }
-    }
-}
-
-private struct Sparkline: View {
-    let points: [Double]
-    let positive: Bool
-
-    var body: some View {
-        Canvas { context, size in
-            guard points.count > 1, let low = points.min(), let high = points.max() else { return }
-            let range = Swift.max(high - low, 0.001)
-            var path = Path()
-            for (index, point) in points.enumerated() {
-                let x = size.width * Double(index) / Double(points.count - 1)
-                let y = size.height - (point - low) / range * size.height
-                if index == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                else { path.addLine(to: CGPoint(x: x, y: y)) }
-            }
-            context.stroke(path, with: .color(positive ? .green : .red), lineWidth: 1.5)
-        }
-    }
-}
-
 private struct WeatherWidget: View {
     @EnvironmentObject private var model: DashboardModel
 

@@ -4,9 +4,14 @@ set -euo pipefail
 project_dir=${0:A:h}
 bundle_identifier=${DESKPULSE_BUNDLE_ID:-com.giladfride.DeskPulse}
 default_signing_identity="-"
-if security find-identity -v -p codesigning | grep -Fq '"OfficeDashboard Local Signing"'; then
-  default_signing_identity="OfficeDashboard Local Signing"
-fi
+available_identities=$(security find-identity -v -p codesigning)
+# Prefer a local "DeskPulse Local Signing" identity; the pre-rename name is still honored.
+for candidate in "DeskPulse Local Signing" "OfficeDashboard Local Signing"; do
+  if print -r -- "$available_identities" | grep -Fq "\"$candidate\""; then
+    default_signing_identity=$candidate
+    break
+  fi
+done
 signing_identity=${DESKPULSE_SIGNING_IDENTITY:-$default_signing_identity}
 staging_dir=$(mktemp -d)
 trap 'rm -rf "$staging_dir"' EXIT
@@ -40,7 +45,7 @@ if [[ -d "$resource_bundle" ]]; then
   xattr -d com.apple.FinderInfo "$resource_bundle" 2>/dev/null || true
   xattr -d 'com.apple.fileprovider.fpfs#P' "$resource_bundle" 2>/dev/null || true
 fi
-if [[ "$signing_identity" != "-" ]] && ! security find-identity -v -p codesigning | grep -Fq "\"$signing_identity\""; then
+if [[ "$signing_identity" != "-" ]] && ! print -r -- "$available_identities" | grep -Fq "\"$signing_identity\""; then
   echo "Missing local signing identity: $signing_identity" >&2
   exit 1
 fi

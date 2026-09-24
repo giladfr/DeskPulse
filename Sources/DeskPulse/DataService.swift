@@ -8,35 +8,6 @@ enum DataService {
         return URLSession(configuration: configuration)
     }()
 
-    static func fetchQuotes() async -> [Quote] {
-        let url = URL(string: "https://scanner.tradingview.com/america/scan")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let payload: [String: Any] = [
-            "symbols": [
-                "tickers": ["NASDAQ:AMD", "NASDAQ:NVDA", "NASDAQ:AVGO", "NYSE:TSM", "NASDAQ:SOXX"],
-                "query": ["types": []]
-            ],
-            "columns": ["name", "close", "change"]
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        guard let (data, _) = try? await session.data(for: request),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = root["data"] as? [[String: Any]] else { return [] }
-        return rows.compactMap { row in
-            guard let values = row["d"] as? [Any], values.count >= 3,
-                  let symbol = values[0] as? String,
-                  let price = values[1] as? Double,
-                  let percent = values[2] as? Double else { return nil }
-            let previous = price / (1 + percent / 100)
-            return Quote(
-                symbol: symbol, price: price, changePercent: percent,
-                points: [previous, price]
-            )
-        }
-    }
-
     static func fetchAMDQuote() async -> AMDQuoteSnapshot? {
         let url = URL(
             string: "https://api.nasdaq.com/api/quote/AMD/info?assetclass=stocks"
@@ -181,13 +152,16 @@ enum DataService {
 
     static func decodeHTMLEntities(_ value: String) -> String {
         var decoded = value
-        let namedEntities = [
-            "&quot;": "\"",
-            "&apos;": "'",
-            "&nbsp;": "\u{00A0}",
-            "&amp;": "&",
-            "&lt;": "<",
-            "&gt;": ">"
+        // Ordered so results are deterministic. "&amp;" goes first so double-encoded
+        // entities in some feeds (e.g. "&amp;quot;") decode fully, matching the
+        // numeric pass below.
+        let namedEntities: [(String, String)] = [
+            ("&amp;", "&"),
+            ("&quot;", "\""),
+            ("&apos;", "'"),
+            ("&nbsp;", "\u{00A0}"),
+            ("&lt;", "<"),
+            ("&gt;", ">")
         ]
         for (entity, replacement) in namedEntities {
             decoded = decoded.replacingOccurrences(of: entity, with: replacement)

@@ -108,14 +108,6 @@ struct FeedItem: Identifiable, Equatable {
     let date: Date?
 }
 
-struct Quote: Identifiable, Equatable {
-    var id: String { symbol }
-    let symbol: String
-    let price: Double
-    let changePercent: Double
-    let points: [Double]
-}
-
 struct AMDQuoteSnapshot: Equatable {
     let price: Double
     let change: Double
@@ -164,19 +156,4 @@ struct DailyForecast: Identifiable, Equatable {
     let high: Int
     let low: Int
     let code: Int
-}
-
-struct StockSymbol: Codable, Identifiable, Equatable {
-    var id: String { tradingViewSymbol }
-    let tradingViewSymbol: String
-    let label: String
-
-    static let defaults: [StockSymbol] = [
-        .init(tradingViewSymbol: "NASDAQ:AMD", label: "AMD"),
-        .init(tradingViewSymbol: "NASDAQ:NVDA", label: "NVDA"),
-        .init(tradingViewSymbol: "NASDAQ:AVGO", label: "AVGO"),
-        .init(tradingViewSymbol: "NYSE:TSM", label: "TSM"),
-        .init(tradingViewSymbol: "NASDAQ:INTC", label: "INTC"),
-        .init(tradingViewSymbol: "NASDAQ:SOXX", label: "SOXX")
-    ]
 }
