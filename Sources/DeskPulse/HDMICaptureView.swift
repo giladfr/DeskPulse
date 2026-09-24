@@ -16,6 +16,15 @@ final class HDMICaptureModel: ObservableObject {
 
     let session = AVCaptureSession()
     @Published private(set) var state: State = .idle
+    /// Dimensions of the frames the card is sending.
+    @Published private(set) var frameSize: CGSize?
+    /// Where the picture sits inside those frames, found by `LetterboxDetector`.
+    @Published private(set) var detectedContent: CGRect?
+
+    /// Samples a few frames after each start to find the black bars, then switches
+    /// itself off so it costs nothing while the picture is live.
+    private let probeOutput = AVCaptureVideoDataOutput()
+    private let probe = FrameProbe()
 
     private let queue = DispatchQueue(label: "com.giladfride.DeskPulse.hdmi-capture", qos: .userInteractive)
     private var configuredDeviceID: String?
@@ -29,6 +38,11 @@ final class HDMICaptureModel: ObservableObject {
     nonisolated(unsafe) private var observers: [any NSObjectProtocol] = []
 
     init() {
+        probeOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        ]
+        probeOutput.alwaysDiscardsLateVideoFrames = true
+        probeOutput.setSampleBufferDelegate(probe, queue: probe.queue)
         let center = NotificationCenter.default
         observers = [
             center.addObserver(
@@ -86,6 +100,31 @@ final class HDMICaptureModel: ObservableObject {
             }
         default:
             state = .unavailable("Camera access is disabled. Enable DeskPulse in System Settings → Privacy & Security → Camera.")
+        }
+    }
+
+    /// Runs bar detection again, e.g. after the source changed resolution.
+    func redetectContent() {
+        guard isLive else { return }
+        detectedContent = nil
+        startProbe(generation: generation)
+    }
+
+    private func startProbe(generation: Int) {
+        let output = probeOutput
+        let queue = queue
+        queue.async {
+            output.connection(with: .video)?.isEnabled = true
+        }
+        probe.arm { [weak self] rect in
+            queue.async {
+                output.connection(with: .video)?.isEnabled = false
+            }
+            Task { @MainActor in
+                self?.report(generation) {
+                    $0.detectedContent = rect ?? LetterboxDetector.fullFrame
+                }
+            }
         }
     }
 
@@ -170,6 +209,8 @@ final class HDMICaptureModel: ObservableObject {
         let session = session
         let previousID = configuredDeviceID
         let rememberedID = UserDefaults.standard.string(forKey: lastDeviceStorageKey)
+        let probeOutput = probeOutput
+        detectedContent = nil
         queue.async { [weak self] in
             let discovery = AVCaptureDevice.DiscoverySession(
                 deviceTypes: [.external], mediaType: .video, position: .unspecified
@@ -202,6 +243,9 @@ final class HDMICaptureModel: ObservableObject {
                         throw CaptureError.cannotAddInput
                     }
                     session.addInput(input)
+                    if !session.outputs.contains(probeOutput), session.canAddOutput(probeOutput) {
+                        session.addOutput(probeOutput)
+                    }
                 }
 
                 guard let choice = Self.bestFormat(for: device) else {
@@ -223,12 +267,16 @@ final class HDMICaptureModel: ObservableObject {
                 Self.logger.info("HDMI capture: \(device.localizedName, privacy: .public) running \(summary, privacy: .public)")
                 let deviceID = device.uniqueID
                 let deviceName = device.localizedName
+                let dimensions = CMVideoFormatDescriptionGetDimensions(active.formatDescription)
+                let frameSize = CGSize(width: Int(dimensions.width), height: Int(dimensions.height))
                 Task { @MainActor in
                     self?.report(generation) {
                         $0.configuredDeviceID = deviceID
                         $0.recoveryAttempts = 0
+                        $0.frameSize = frameSize
                         $0.state = .live(deviceName, summary)
                         UserDefaults.standard.set(deviceID, forKey: $0.lastDeviceStorageKey)
+                        $0.startProbe(generation: generation)
                     }
                 }
             } catch {
@@ -334,11 +382,100 @@ final class HDMICaptureModel: ObservableObject {
     }
 }
 
+/// Looks at a handful of frames after it is armed and reports where the picture is.
+private final class FrameProbe: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
+    @unchecked Sendable
+{
+    /// Sample-buffer delegate queue; all state below is only touched on it.
+    let queue = DispatchQueue(label: "com.giladfride.DeskPulse.hdmi-probe", qos: .utility)
+    private var onResult: (@Sendable (CGRect?) -> Void)?
+    private var framesSeen = 0
+    private var attempts = 0
+
+    func arm(_ onResult: @escaping @Sendable (CGRect?) -> Void) {
+        queue.async {
+            self.onResult = onResult
+            self.framesSeen = 0
+            self.attempts = 0
+        }
+    }
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        guard let onResult else { return }
+        framesSeen += 1
+        // Skip ~half a second while the card locks on, then check every 15th frame.
+        guard framesSeen > 30, framesSeen % 15 == 0 else { return }
+        attempts += 1
+        let result = CMSampleBufferGetImageBuffer(sampleBuffer).map(Self.detect) ?? .uncertain
+        switch result {
+        case .content(let rect):
+            finish(onResult, rect)
+        case .blank, .uncertain:
+            // A dark or ambiguous screen may change; give up after ~10 seconds.
+            if attempts >= 20 { finish(onResult, nil) }
+        }
+    }
+
+    private func finish(_ onResult: @Sendable (CGRect?) -> Void, _ rect: CGRect?) {
+        self.onResult = nil
+        onResult(rect)
+    }
+
+    private static func detect(_ pixelBuffer: CVPixelBuffer) -> LetterboxDetector.Result {
+        guard CVPixelBufferIsPlanar(pixelBuffer) else { return .uncertain }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+            return .uncertain
+        }
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let image = LumaImage(
+            width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 0),
+            height: height,
+            bytesPerRow: bytesPerRow,
+            bytes: UnsafeRawBufferPointer(start: base, count: bytesPerRow * height)
+        )
+        return LetterboxDetector.detect(in: image)
+    }
+}
+
+/// The shape of the source laptop's screen, used to crop the card's black bars.
+enum HDMISourceShape: String, CaseIterable, Identifiable {
+    case automatic, wide16x10, standard4x3, photo3x2, fullFrame
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic: "Auto-detect"
+        case .wide16x10: "16:10"
+        case .standard4x3: "4:3"
+        case .photo3x2: "3:2"
+        case .fullFrame: "Full frame · no crop"
+        }
+    }
+
+    var aspect: Double? {
+        switch self {
+        case .wide16x10: 16.0 / 10
+        case .standard4x3: 4.0 / 3
+        case .photo3x2: 3.0 / 2
+        case .automatic, .fullFrame: nil
+        }
+    }
+}
+
 struct HDMICaptureView: View {
     @ObservedObject var model: HDMICaptureModel
     let onExit: () -> Void
     @State private var fillsScreen = false
     @State private var enhancesColor = false
+    @AppStorage("hdmi.source-shape.v1") private var sourceShape: HDMISourceShape = .automatic
     @State private var controlsVisible = true
     @State private var pointerOverControls = false
     @State private var hideControlsTask: Task<Void, Never>?
@@ -349,6 +486,8 @@ struct HDMICaptureView: View {
                 Color.black
                 CapturePreview(
                     session: model.session,
+                    frameSize: model.frameSize,
+                    contentRect: contentRect,
                     fillsScreen: fillsScreen,
                     enhancesColor: enhancesColor
                 )
@@ -397,6 +536,35 @@ struct HDMICaptureView: View {
         .background(Color.black)
     }
 
+    /// Where the source laptop's picture sits in the captured frame.
+    private var contentRect: CGRect {
+        if let aspect = sourceShape.aspect, let frameSize = model.frameSize {
+            return LetterboxDetector.centeredRect(aspect: aspect, in: frameSize)
+        }
+        if sourceShape == .automatic, let detected = model.detectedContent {
+            return detected
+        }
+        return LetterboxDetector.fullFrame
+    }
+
+    /// The picture's size in captured pixels, e.g. 1728×1080 for 16:10 inside 1080p.
+    private var pictureSize: CGSize? {
+        model.frameSize.map {
+            CGSize(
+                width: ($0.width * contentRect.width).rounded(),
+                height: ($0.height * contentRect.height).rounded()
+            )
+        }
+    }
+
+    private var sourceShapeLabel: String {
+        guard sourceShape == .automatic else { return sourceShape.title }
+        guard model.detectedContent != nil, let pictureSize else { return "Auto · detecting…" }
+        let shape = CaptureGeometry.shapeName(width: pictureSize.width, height: pictureSize.height)
+            ?? "\(Int(pictureSize.width))×\(Int(pictureSize.height))"
+        return "Auto · \(shape)"
+    }
+
     /// Shows the toolbar on pointer movement and hides it, with the cursor, once idle,
     /// so the full HDMI picture stays unobstructed.
     private func showControlsBriefly() {
@@ -430,17 +598,37 @@ struct HDMICaptureView: View {
                 if case .live(let name, let format) = model.state {
                     Label("LIVE", systemImage: "circle.fill")
                         .foregroundStyle(.red)
-                        .help("\(name) · \(format)")
+                        .help(pictureSize.map {
+                            "\(name) · \(format) · picture \(Int($0.width))×\(Int($0.height))"
+                        } ?? "\(name) · \(format)")
                 }
+                Menu {
+                    Picker("Source screen shape", selection: $sourceShape) {
+                        ForEach(HDMISourceShape.allCases) { shape in
+                            Text(shape.title).tag(shape)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    if sourceShape == .automatic {
+                        Divider()
+                        Button("Detect again") { model.redetectContent() }
+                    }
+                } label: {
+                    Label(sourceShapeLabel, systemImage: "crop")
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Crops the capture card's black bars to the source screen's shape")
                 Button {
                     fillsScreen.toggle()
                 } label: {
                     Label(
-                        fillsScreen ? "Fill · crops edges" : "Fit · entire screen",
+                        fillsScreen ? "Fill · crops edges" : "Fit · entire picture",
                         systemImage: fillsScreen ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left"
                     )
                 }
-                .help(fillsScreen ? "Fill the Mac display by cropping the HDMI image's sides" : "Preserve the entire HDMI image without cropping")
+                .help(fillsScreen ? "Fill the Mac display, cropping the picture's edges if its shape differs" : "Show the whole picture without its black bars")
                 Button {
                     enhancesColor.toggle()
                 } label: {
@@ -463,6 +651,8 @@ struct HDMICaptureView: View {
 
 private struct CapturePreview: NSViewRepresentable {
     let session: AVCaptureSession
+    let frameSize: CGSize?
+    let contentRect: CGRect
     let fillsScreen: Bool
     let enhancesColor: Bool
 
@@ -473,10 +663,16 @@ private struct CapturePreview: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PreviewView, context: Context) {
-        view.previewLayer.videoGravity = fillsScreen ? .resizeAspectFill : .resizeAspect
-        // The CM629 pillarboxes a 1920×1200 HDMI signal inside its 16:9 UVC
-        // frame. A little overscan in Fill mode removes that embedded matte.
-        view.overscan = fillsScreen ? 0.04 : 0
+        // With a known frame size the layer is sized so the picture inside the card's
+        // black bars maps exactly onto the screen; until then, plain aspect fit/fill.
+        if frameSize != nil {
+            view.previewLayer.videoGravity = .resize
+        } else {
+            view.previewLayer.videoGravity = fillsScreen ? .resizeAspectFill : .resizeAspect
+        }
+        view.frameSize = frameSize
+        view.contentRect = contentRect
+        view.fillsScreen = fillsScreen
         if enhancesColor {
             let color = CIFilter(name: "CIColorControls")
             color?.setValue(1.08, forKey: kCIInputSaturationKey)
@@ -491,7 +687,9 @@ private struct CapturePreview: NSViewRepresentable {
 
     final class PreviewView: NSView {
         let previewLayer = AVCaptureVideoPreviewLayer()
-        var overscan: CGFloat = 0
+        var frameSize: CGSize?
+        var contentRect = LetterboxDetector.fullFrame
+        var fillsScreen = false
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -510,10 +708,14 @@ private struct CapturePreview: NSViewRepresentable {
             super.layout()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            previewLayer.frame = bounds.insetBy(
-                dx: -(bounds.width * overscan),
-                dy: 0
-            )
+            previewLayer.frame = frameSize.map {
+                CaptureGeometry.previewFrame(
+                    bounds: bounds,
+                    frameSize: $0,
+                    content: contentRect,
+                    fills: fillsScreen
+                )
+            } ?? bounds
             CATransaction.commit()
         }
     }

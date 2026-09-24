@@ -139,4 +139,107 @@ final class DeskPulseTests: XCTestCase {
         )
     }
 
+    // MARK: HDMI black-bar crop
+
+    private func detect(
+        width: Int,
+        height: Int,
+        luma: (Int, Int) -> UInt8
+    ) -> LetterboxDetector.Result {
+        var bytes = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width { bytes[y * width + x] = luma(x, y) }
+        }
+        return bytes.withUnsafeBytes {
+            LetterboxDetector.detect(in: LumaImage(
+                width: width, height: height, bytesPerRow: width, bytes: $0
+            ))
+        }
+    }
+
+    private func assertRect(
+        _ result: LetterboxDetector.Result,
+        _ expected: CGRect,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case .content(let rect) = result else {
+            return XCTFail("Expected content, got \(result)", file: file, line: line)
+        }
+        XCTAssertEqual(rect.minX, expected.minX, accuracy: 1e-6, file: file, line: line)
+        XCTAssertEqual(rect.minY, expected.minY, accuracy: 1e-6, file: file, line: line)
+        XCTAssertEqual(rect.width, expected.width, accuracy: 1e-6, file: file, line: line)
+        XCTAssertEqual(rect.height, expected.height, accuracy: 1e-6, file: file, line: line)
+    }
+
+    func testDetectsPillarboxedSixteenByTenPictureAndSnapsToExactShape() {
+        // 16:10 inside 16:9 (like 1920×1200 inside 1920×1080), with 9 px bars.
+        let result = detect(width: 192, height: 108) { x, _ in
+            (9..<183).contains(x) ? 200 : 16
+        }
+        assertRect(result, CGRect(x: 0.05, y: 0, width: 0.9, height: 1))
+    }
+
+    func testFrameWithoutBarsIsFullFrame() {
+        assertRect(detect(width: 192, height: 108) { _, _ in 120 }, LetterboxDetector.fullFrame)
+    }
+
+    func testBlankFrameIsReportedAsBlank() {
+        XCTAssertEqual(detect(width: 192, height: 108) { _, _ in 16 }, .blank)
+    }
+
+    func testLopsidedDarkEdgeIsNotTreatedAsBars() {
+        let result = detect(width: 192, height: 108) { x, _ in x < 20 ? 16 : 200 }
+        XCTAssertEqual(result, .uncertain)
+    }
+
+    func testDarkDesktopWithMenuBarIsNotCropped() {
+        // Dark wallpaper edges, but a bright menu bar spans the full width.
+        let result = detect(width: 192, height: 108) { x, y in
+            y < 3 || (40..<150).contains(x) ? 220 : 18
+        }
+        assertRect(result, LetterboxDetector.fullFrame)
+    }
+
+    func testCenteredRectForSixteenByTenInsideSixteenByNine() {
+        let rect = LetterboxDetector.centeredRect(
+            aspect: 16.0 / 10,
+            in: CGSize(width: 1920, height: 1080)
+        )
+        XCTAssertEqual(rect.minX, 0.05, accuracy: 1e-9)
+        XCTAssertEqual(rect.width, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(rect.height, 1, accuracy: 1e-9)
+    }
+
+    func testPreviewFramePlacesPictureExactlyOnScreen() {
+        let bounds = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let frameSize = CGSize(width: 1920, height: 1080)
+        let content = CGRect(x: 0.05, y: 0, width: 0.9, height: 1)
+
+        // Fit: the 1728×1080 picture is scaled by 0.875 to span the full width.
+        let fit = CaptureGeometry.previewFrame(
+            bounds: bounds, frameSize: frameSize, content: content, fills: false
+        )
+        XCTAssertEqual(fit.width, 1680, accuracy: 1e-6)
+        XCTAssertEqual(fit.height, 945, accuracy: 1e-6)
+        XCTAssertEqual(fit.minX, -84, accuracy: 1e-6)
+        XCTAssertEqual(fit.minY, 18.5, accuracy: 1e-6)
+        // The bars land exactly outside the screen's left and right edges.
+        XCTAssertEqual(fit.minX + fit.width * content.minX, 0, accuracy: 1e-6)
+        XCTAssertEqual(fit.minX + fit.width * content.maxX, 1512, accuracy: 1e-6)
+
+        // Fill: scaled to the full height, trimming only the picture's sides.
+        let fill = CaptureGeometry.previewFrame(
+            bounds: bounds, frameSize: frameSize, content: content, fills: true
+        )
+        XCTAssertEqual(fill.height, 982, accuracy: 1e-6)
+        XCTAssertEqual(fill.minY, 0, accuracy: 1e-6)
+        XCTAssertEqual(fill.midX, bounds.midX, accuracy: 1e-6)
+    }
+
+    func testShapeNamesForCommonPictures() {
+        XCTAssertEqual(CaptureGeometry.shapeName(width: 1728, height: 1080), "16:10")
+        XCTAssertEqual(CaptureGeometry.shapeName(width: 1920, height: 1080), "16:9")
+        XCTAssertNil(CaptureGeometry.shapeName(width: 1000, height: 1000))
+    }
 }
