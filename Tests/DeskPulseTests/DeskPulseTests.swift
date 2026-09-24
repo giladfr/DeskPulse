@@ -16,17 +16,16 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertTrue(Set(WidgetKind.allCases).isSuperset(of: kinds))
     }
 
-    func testDefaultStocksIncludeIntel() {
-        XCTAssertTrue(StockSymbol.defaults.contains {
-            $0.tradingViewSymbol == "NASDAQ:INTC"
-        })
-    }
-
     func testFeedTitlesDecodeDoubleEncodedHebrewPunctuation() {
         XCTAssertEqual(
             DataService.decodeHTMLEntities("בכיר: &amp;#1523;בדיקה&amp;#1524;"),
             "בכיר: ׳בדיקה״"
         )
+    }
+
+    func testNamedEntityDecodingIsDeterministic() {
+        XCTAssertEqual(DataService.decodeHTMLEntities("a &amp;lt; b &amp;quot;c&amp;quot;"), "a < b \"c\"")
+        XCTAssertEqual(DataService.decodeHTMLEntities("Q&amp;A &lt;live&gt;"), "Q&A <live>")
     }
 
     func testFeedItemsKeepStableIdentityAcrossRefreshes() {

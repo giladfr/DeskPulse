@@ -70,8 +70,10 @@ song recognition with prominent album art.
 
 ## Build it
 
-Requirements: macOS 14 or newer, Xcode/Swift 6, and Python 3.11+ for optional
-radio song recognition.
+Requirements: macOS 14 or newer and Xcode/Swift 6. Optional radio song
+recognition also needs Python 3.11+ to build its helper and `ffmpeg` at run time
+(`brew install ffmpeg`; DeskPulse looks in `/opt/homebrew/bin`, `/usr/local/bin`,
+`/opt/local/bin`, and `PATH`).
 
 ```sh
 git clone https://github.com/giladfr/DeskPulse.git
@@ -82,8 +84,8 @@ open /Applications/DeskPulse.app
 ```
 
 `build-app.sh` creates a local song-recognition helper on first use, assembles the
-app and installs it in `/Applications`. It uses the
-DeskPulse development signing identity when available and otherwise signs ad hoc.
+app and installs it in `/Applications`. It signs with a local code-signing
+identity named `DeskPulse Local Signing` when one exists and otherwise signs ad hoc.
 To choose a stable identity explicitly—which helps WebKit and Keychain recognize
 rebuilt copies as the same app—set it when building:
 

@@ -87,7 +87,7 @@ struct EmbeddedWebView: NSViewRepresentable {
             let isUserLink = navigationAction.navigationType == .linkActivated
 
             if isUserLink && !isAllowed {
-                openInChrome(url)
+                NSWorkspace.shared.open(url)
                 return .cancel
             }
             return .allow
@@ -107,89 +107,9 @@ struct EmbeddedWebView: NSViewRepresentable {
             if isAllowed {
                 webView.load(navigationAction.request)
             } else {
-                openInChrome(url)
+                NSWorkspace.shared.open(url)
             }
             return nil
         }
-
-        private func openInChrome(_ url: URL) {
-            let workspace = NSWorkspace.shared
-            guard let chrome = workspace.urlForApplication(
-                withBundleIdentifier: "com.google.Chrome"
-            ) else {
-                workspace.open(url)
-                return
-            }
-            workspace.open(
-                [url],
-                withApplicationAt: chrome,
-                configuration: NSWorkspace.OpenConfiguration()
-            )
-        }
-    }
-}
-
-enum StockDashboardHTML {
-    static func make(symbols: [StockSymbol]) -> String {
-        let pairs = symbols.map { "[\"\($0.tradingViewSymbol)\",\"\($0.label)\"]" }
-            .joined(separator: ",")
-        return """
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="color-scheme" content="dark">
-      <style>
-        * { box-sizing: border-box; }
-        html, body { margin: 0; height: 100%; overflow: hidden; background: #101521; }
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-        #grid {
-          display: grid; grid-template-columns: repeat(\(max(symbols.count, 1)), minmax(190px, 1fr));
-          gap: 1px; height: 100%; background: rgba(255,255,255,.07);
-        }
-        .chart { min-width: 0; height: 100%; background: #101521; }
-        @media(max-width: 900px) {
-          #grid { grid-template-columns: repeat(2, minmax(220px, 1fr)); overflow-y: auto; }
-          .chart { min-height: 230px; }
-        }
-      </style>
-    </head>
-    <body>
-      <div id="grid"></div>
-      <script>
-        const symbols = [\(pairs)];
-        const grid = document.getElementById("grid");
-        symbols.forEach(([symbol, label]) => {
-          const box = document.createElement("div");
-          box.className = "chart tradingview-widget-container";
-          const widget = document.createElement("div");
-          widget.className = "tradingview-widget-container__widget";
-          widget.style.height = "100%";
-          box.appendChild(widget);
-          const script = document.createElement("script");
-          script.type = "text/javascript";
-          script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
-          script.async = true;
-          script.textContent = JSON.stringify({
-            symbol, width: "100%", height: "100%", locale: "en",
-            interval: "5", range: "1D", timezone: "America/New_York",
-            colorTheme: "dark", backgroundColor: "#101521",
-            gridColor: "rgba(255,255,255,0.055)", autosize: true,
-            style: "3", hide_top_toolbar: true, hide_legend: false,
-            hide_side_toolbar: true, allow_symbol_change: false,
-            save_image: false, calendar: false, withdateranges: false,
-            details: false, hotlist: false, support_host: "https://www.tradingview.com",
-            overrides: {
-              "mainSeriesProperties.showPrevClosePriceLine": true,
-              "mainSeriesProperties.prevClosePriceLineWidth": 1
-            }
-          });
-          box.appendChild(script);
-          grid.appendChild(box);
-        });
-      </script>
-    </body>
-    </html>
-    """
     }
 }
