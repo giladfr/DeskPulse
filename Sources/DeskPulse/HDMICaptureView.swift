@@ -19,8 +19,54 @@ final class HDMICaptureModel: ObservableObject {
 
     private let queue = DispatchQueue(label: "com.giladfride.DeskPulse.hdmi-capture", qos: .userInteractive)
     private var configuredDeviceID: String?
+    private let lastDeviceStorageKey = "hdmi.capture-device.v1"
+    /// True between start() and stop(); recovery only runs while the viewer is open.
+    private var isActive = false
+    /// Bumped on every start/stop so a slow, superseded start cannot report late.
+    private var generation = 0
+    private var recoveryAttempts = 0
+    private var recoveryTask: Task<Void, Never>?
+    nonisolated(unsafe) private var observers: [any NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(
+                forName: AVCaptureDevice.wasConnectedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.deviceConnected() }
+            },
+            center.addObserver(
+                forName: AVCaptureDevice.wasDisconnectedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let deviceID = (notification.object as? AVCaptureDevice)?.uniqueID
+                MainActor.assumeIsolated { self?.deviceDisconnected(deviceID) }
+            },
+            center.addObserver(
+                forName: AVCaptureSession.runtimeErrorNotification,
+                object: session,
+                queue: .main
+            ) { [weak self] notification in
+                let error = notification.userInfo?[AVCaptureSessionErrorKey] as? Error
+                let message = error?.localizedDescription ?? "Unknown capture error"
+                MainActor.assumeIsolated { self?.sessionFailed(message) }
+            }
+        ]
+    }
+
+    deinit {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     func start() {
+        isActive = true
+        recoveryAttempts = 0
         guard state != .requestingPermission else { return }
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
@@ -44,6 +90,10 @@ final class HDMICaptureModel: ObservableObject {
     }
 
     func stop() {
+        isActive = false
+        generation &+= 1
+        recoveryTask?.cancel()
+        recoveryTask = nil
         let session = session
         queue.async {
             if session.isRunning { session.stopRunning() }
@@ -51,20 +101,94 @@ final class HDMICaptureModel: ObservableObject {
         state = .idle
     }
 
+    // MARK: Recovery
+
+    private func deviceConnected() {
+        // A card plugged in while the viewer waits for one starts immediately.
+        guard isActive, !isLive else { return }
+        recoveryAttempts = 0
+        configureAndStart()
+    }
+
+    private func deviceDisconnected(_ deviceID: String?) {
+        guard deviceID != nil, deviceID == configuredDeviceID else { return }
+        forgetInputs()
+        guard isActive else { return }
+        generation &+= 1
+        recoveryTask?.cancel()
+        state = .unavailable("The HDMI capture card was disconnected. Reconnect it to continue.")
+    }
+
+    private func sessionFailed(_ message: String) {
+        Self.logger.error("HDMI capture runtime error: \(message, privacy: .public)")
+        guard isActive else { return }
+        forgetInputs()
+        guard recoveryAttempts < 3 else {
+            state = .unavailable("The HDMI capture stopped: \(message)")
+            return
+        }
+        recoveryAttempts += 1
+        state = .connecting
+        let delay = Double(recoveryAttempts)
+        recoveryTask?.cancel()
+        recoveryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.isActive else { return }
+            self.configureAndStart()
+        }
+    }
+
+    /// Drops the session's inputs so the next start rebuilds them from scratch.
+    private func forgetInputs() {
+        configuredDeviceID = nil
+        let session = session
+        queue.async {
+            if session.isRunning { session.stopRunning() }
+            session.beginConfiguration()
+            session.inputs.forEach(session.removeInput)
+            session.commitConfiguration()
+        }
+    }
+
+    private var isLive: Bool {
+        if case .live = state { return true }
+        return false
+    }
+
+    /// Applies a result from the capture queue unless a later start or stop replaced it.
+    private func report(_ generation: Int, _ update: (HDMICaptureModel) -> Void) {
+        guard generation == self.generation, isActive else { return }
+        update(self)
+    }
+
+    // MARK: Configuration
+
     private func configureAndStart() {
+        generation &+= 1
+        let generation = generation
         state = .connecting
         let session = session
         let previousID = configuredDeviceID
+        let rememberedID = UserDefaults.standard.string(forKey: lastDeviceStorageKey)
         queue.async { [weak self] in
             let discovery = AVCaptureDevice.DiscoverySession(
                 deviceTypes: [.external], mediaType: .video, position: .unspecified
             )
             let devices = discovery.devices
-            guard let device = devices.first(where: {
-                let name = $0.localizedName.lowercased()
-                return name.contains("ugreen") || name.contains("15389") || name.contains("cm629")
-            }) ?? devices.first else {
-                Task { @MainActor in self?.state = .unavailable("No USB HDMI capture card was found.") }
+            // Prefer the card that worked last time, then a known capture-card name,
+            // and only then any other external camera.
+            guard let device = devices.first(where: { $0.uniqueID == rememberedID })
+                ?? devices.first(where: {
+                    let name = $0.localizedName.lowercased()
+                    return name.contains("ugreen") || name.contains("15389") || name.contains("cm629")
+                })
+                ?? devices.first
+            else {
+                Task { @MainActor in
+                    self?.report(generation) {
+                        $0.state = .unavailable("No USB HDMI capture card was found. Connect one to start.")
+                    }
+                }
                 return
             }
 
@@ -97,12 +221,21 @@ final class HDMICaptureModel: ObservableObject {
                 let active = device.activeFormat
                 let summary = Self.describe(active, frameDuration: device.activeVideoMinFrameDuration)
                 Self.logger.info("HDMI capture: \(device.localizedName, privacy: .public) running \(summary, privacy: .public)")
+                let deviceID = device.uniqueID
+                let deviceName = device.localizedName
                 Task { @MainActor in
-                    self?.configuredDeviceID = device.uniqueID
-                    self?.state = .live(device.localizedName, summary)
+                    self?.report(generation) {
+                        $0.configuredDeviceID = deviceID
+                        $0.recoveryAttempts = 0
+                        $0.state = .live(deviceName, summary)
+                        UserDefaults.standard.set(deviceID, forKey: $0.lastDeviceStorageKey)
+                    }
                 }
             } catch {
-                Task { @MainActor in self?.state = .unavailable("Could not start \(device.localizedName): \(error.localizedDescription)") }
+                let message = "Could not start \(device.localizedName): \(error.localizedDescription)"
+                Task { @MainActor in
+                    self?.report(generation) { $0.state = .unavailable(message) }
+                }
             }
         }
     }
@@ -205,8 +338,10 @@ struct HDMICaptureView: View {
     @ObservedObject var model: HDMICaptureModel
     let onExit: () -> Void
     @State private var fillsScreen = false
-    @State private var enhancesColor = true
+    @State private var enhancesColor = false
     @State private var controlsVisible = true
+    @State private var pointerOverControls = false
+    @State private var hideControlsTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { proxy in
@@ -237,19 +372,49 @@ struct HDMICaptureView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
                 }
 
-                if controlsVisible {
-                    controls
-                        .transition(.opacity)
-                }
+                // Kept in the hierarchy while hidden so the Escape shortcut always works.
+                controls
+                    .opacity(controlsVisible ? 1 : 0)
+                    .allowsHitTesting(controlsVisible)
             }
             .contentShape(Rectangle())
-            .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.16)) { controlsVisible = hovering }
+            .onContinuousHover { phase in
+                switch phase {
+                case .active: showControlsBriefly()
+                case .ended: scheduleControlsHide(after: 0.3)
+                }
             }
-            .onAppear { model.start() }
-            .onDisappear { model.stop() }
+            .onChange(of: model.state) { _, _ in showControlsBriefly() }
+            .onAppear {
+                model.start()
+                showControlsBriefly()
+            }
+            .onDisappear {
+                hideControlsTask?.cancel()
+                model.stop()
+            }
         }
         .background(Color.black)
+    }
+
+    /// Shows the toolbar on pointer movement and hides it, with the cursor, once idle,
+    /// so the full HDMI picture stays unobstructed.
+    private func showControlsBriefly() {
+        if !controlsVisible {
+            withAnimation(.easeOut(duration: 0.16)) { controlsVisible = true }
+        }
+        scheduleControlsHide(after: 2.5)
+    }
+
+    private func scheduleControlsHide(after seconds: Double) {
+        hideControlsTask?.cancel()
+        hideControlsTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            // Keep the toolbar up while it is in use or while there is no live picture.
+            guard !Task.isCancelled, !pointerOverControls, case .live = model.state else { return }
+            withAnimation(.easeOut(duration: 0.3)) { controlsVisible = false }
+            NSCursor.setHiddenUntilMouseMoves(true)
+        }
     }
 
     private var controls: some View {
@@ -287,6 +452,10 @@ struct HDMICaptureView: View {
             .buttonStyle(.borderedProminent)
             .tint(Color.black.opacity(0.72))
             .padding(16)
+            .onHover { hovering in
+                pointerOverControls = hovering
+                if !hovering { showControlsBriefly() }
+            }
             Spacer()
         }
     }
@@ -326,19 +495,26 @@ private struct CapturePreview: NSViewRepresentable {
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
+            // AppKit owns the geometry of a view's backing layer, so the preview is a
+            // sublayer whose frame this view controls; the backing layer clips it.
             wantsLayer = true
-            layer = previewLayer
+            layer?.backgroundColor = NSColor.black.cgColor
+            layer?.masksToBounds = true
             previewLayer.backgroundColor = NSColor.black.cgColor
+            layer?.addSublayer(previewLayer)
         }
 
         required init?(coder: NSCoder) { nil }
 
         override func layout() {
             super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             previewLayer.frame = bounds.insetBy(
                 dx: -(bounds.width * overscan),
                 dy: 0
             )
+            CATransaction.commit()
         }
     }
 }
