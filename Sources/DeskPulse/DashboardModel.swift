@@ -123,11 +123,6 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    func stopRefreshing() {
-        refreshTask?.cancel()
-        refreshTask = nil
-    }
-
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true

@@ -472,7 +472,10 @@ enum HDMISourceShape: String, CaseIterable, Identifiable {
 
 struct HDMICaptureView: View {
     @ObservedObject var model: HDMICaptureModel
-    let onExit: () -> Void
+    /// Switches to the dashboard's Space; the HDMI picture keeps running.
+    let onShowDashboard: () -> Void
+    /// Closes the HDMI window and releases the capture card.
+    let onClose: () -> Void
     @State private var fillsScreen = false
     @State private var enhancesColor = false
     @AppStorage("hdmi.source-shape.v1") private var sourceShape: HDMISourceShape = .automatic
@@ -588,10 +591,15 @@ struct HDMICaptureView: View {
     private var controls: some View {
         VStack {
             HStack(spacing: 10) {
-                Button(action: onExit) {
+                Button(action: onShowDashboard) {
                     Label("DeskPulse", systemImage: "square.grid.2x2.fill")
                 }
                 .keyboardShortcut(.escape, modifiers: [])
+                .help("Switch to the dashboard (Esc). The HDMI screen keeps running in its own Space.")
+                Button(action: onClose) {
+                    Label("Close", systemImage: "xmark")
+                }
+                .help("Close the HDMI screen and release the capture card (⌘W)")
 
                 Spacer()
 

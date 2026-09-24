@@ -5,7 +5,9 @@ struct DeskPulseApp: App {
     @StateObject private var model = DashboardModel()
 
     var body: some Scene {
-        WindowGroup {
+        // A single dashboard window, so "show the dashboard" from the HDMI screen
+        // brings this one forward instead of opening another.
+        Window("DeskPulse", id: DashboardWindow.id) {
             DashboardView()
                 .environmentObject(model)
                 .preferredColorScheme(.dark)
@@ -25,5 +27,14 @@ struct DeskPulseApp: App {
                 .keyboardShortcut("f", modifiers: [.command, .control])
             }
         }
+
+        Window("HDMI Input", id: HDMIWindow.id) {
+            HDMIWindowView()
+                .preferredColorScheme(.dark)
+                .frame(minWidth: 640, minHeight: 360)
+        }
+        .windowStyle(.hiddenTitleBar)
+        // Opened from the dashboard's toolbar only, not from the Window menu.
+        .commandsRemoved()
     }
 }

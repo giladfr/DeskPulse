@@ -6,43 +6,21 @@ struct DashboardView: View {
     @State private var savedSlotFeedback: Int?
     @State private var warSavedFeedback = false
     @State private var hoveredWidgetKind: WidgetKind?
-    @State private var showsHDMICapture = false
-    @StateObject private var hdmiCapture = HDMICaptureModel()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Group {
-            if showsHDMICapture {
-                HDMICaptureView(model: hdmiCapture) {
-                    showsHDMICapture = false
+        // The dashboard keeps refreshing while the HDMI screen is open in its own Space.
+        dashboard
+            .background(Color.black)
+            .ignoresSafeArea()
+            .background(FullScreenWindow())
+            .onAppear { model.start() }
+            .onChange(of: model.warActivationRequest) { _, request in
+                guard request > 0, model.activeLayout != .war else { return }
+                withAnimation(.snappy(duration: 0.45)) {
+                    model.activateWarLayout(in: canvasSize)
                 }
-            } else {
-                dashboard
             }
-        }
-        .background(Color.black)
-        .ignoresSafeArea()
-        .task(id: showsHDMICapture) {
-            if showsHDMICapture {
-                model.stopRefreshing()
-            } else {
-                model.start()
-            }
-        }
-        .onAppear {
-            // HDMI is an in-app workspace, never a restored launch destination.
-            showsHDMICapture = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard let window = NSApplication.shared.keyWindow,
-                      !window.styleMask.contains(.fullScreen) else { return }
-                window.toggleFullScreen(nil)
-            }
-        }
-        .onChange(of: model.warActivationRequest) { _, request in
-            guard request > 0, model.activeLayout != .war else { return }
-            withAnimation(.snappy(duration: 0.45)) {
-                model.activateWarLayout(in: canvasSize)
-            }
-        }
     }
 
     private var dashboard: some View {
@@ -162,12 +140,13 @@ struct DashboardView: View {
                 )
 
                 Button {
-                    showsHDMICapture = true
+                    HDMIWindow.wasRequested = true
+                    openWindow(id: HDMIWindow.id)
                 } label: {
                     Image(systemName: "rectangle.on.rectangle.angled")
                 }
                 .buttonStyle(HeaderButtonStyle())
-                .help("Open UGREEN HDMI input full screen")
+                .help("Open the HDMI input in its own full-screen Space — swipe between it and the dashboard")
             }
             Spacer()
             HStack(spacing: 5) {
