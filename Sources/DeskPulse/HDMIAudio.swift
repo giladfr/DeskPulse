@@ -68,14 +68,14 @@ final class HDMIAudio: ObservableObject {
         case .authorized:
             configure()
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { @Sendable [weak self] allowed in
-                Task { @MainActor in
-                    guard let self, self.isActive else { return }
-                    if allowed {
-                        self.configure()
-                    } else {
-                        self.status = .denied
-                    }
+            // The async form avoids a completion closure called on a background queue.
+            Task { [weak self] in
+                let allowed = await AVCaptureDevice.requestAccess(for: .audio)
+                guard let self, self.isActive else { return }
+                if allowed {
+                    self.configure()
+                } else {
+                    self.status = .denied
                 }
             }
         default:

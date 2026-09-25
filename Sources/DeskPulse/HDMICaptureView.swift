@@ -88,14 +88,14 @@ final class HDMICaptureModel: ObservableObject {
         case .notDetermined:
             state = .requestingPermission
             NSApplication.shared.activate(ignoringOtherApps: true)
-            AVCaptureDevice.requestAccess(for: .video) { @Sendable [weak self] allowed in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if allowed {
-                        self.configureAndStart()
-                    } else {
-                        self.state = .unavailable("Camera access is required for the HDMI capture card.")
-                    }
+            // The async form avoids a completion closure called on a background queue.
+            Task { [weak self] in
+                let allowed = await AVCaptureDevice.requestAccess(for: .video)
+                guard let self else { return }
+                if allowed {
+                    self.configureAndStart()
+                } else {
+                    self.state = .unavailable("Camera access is required for the HDMI capture card.")
                 }
             }
         default:

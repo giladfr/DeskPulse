@@ -22,13 +22,12 @@ enum Notifier {
         isSetUp = true
         let center = UNUserNotificationCenter.current()
         center.delegate = delegate
-        requestAuthorization(center)
-    }
-
-    /// The completion runs on a background queue, so it is created outside the main
-    /// actor (see `RedAlertMonitor.ping`).
-    nonisolated private static func requestAuthorization(_ center: UNUserNotificationCenter) {
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // The async form has no completion closure to be inferred main-actor isolated
+        // and then called on a background queue (see `sendKeepAlivePing`).
+        Task.detached {
+            _ = try? await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound])
+        }
     }
 
     static func post(id: String, title: String, body: String, sound: Bool = true) {

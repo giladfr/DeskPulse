@@ -88,7 +88,7 @@ final class RedAlertMonitor: ObservableObject {
             let keepAlive = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(25))
-                    Self.ping(socket)
+                    sendKeepAlivePing(socket)
                 }
             }
             do {
@@ -113,13 +113,6 @@ final class RedAlertMonitor: ObservableObject {
         }
     }
 
-    /// URLSession calls the pong handler on its own queue. The closure must be created
-    /// outside the main actor: one formed in main-actor code is checked to run on the
-    /// main thread, and that check crashed the app on the first ping.
-    nonisolated private static func ping(_ socket: URLSessionWebSocketTask) {
-        socket.sendPing { _ in }
-    }
-
     private func handle(_ message: URLSessionWebSocketTask.Message) {
         let data: Data
         switch message {
@@ -134,4 +127,12 @@ final class RedAlertMonitor: ObservableObject {
         Self.logger.info("Red Alert: \(alert.cities.count) areas, threat \(alert.threat)")
         onAlert(alert)
     }
+}
+
+/// Sends a WebSocket ping. URLSession calls the pong handler on its own queue, so the
+/// handler is explicitly `@Sendable` and created outside any actor-isolated type: a
+/// handler Swift infers as main-actor isolated is checked at runtime and trapped on the
+/// first ping (even from a `nonisolated` method of the `@MainActor` monitor).
+func sendKeepAlivePing(_ socket: URLSessionWebSocketTask) {
+    socket.sendPing { @Sendable _ in }
 }

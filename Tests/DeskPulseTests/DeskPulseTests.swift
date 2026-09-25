@@ -53,6 +53,17 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertNil(RedAlert.parse(Data("not json".utf8)))
     }
 
+    /// Regression test for two 1.0 crashes: URLSession calls the pong handler on its own
+    /// queue, and a handler Swift treated as main-actor isolated trapped there. A closed
+    /// local port makes URLSession call the handler (with an error) off the main thread.
+    func testKeepAlivePingHandlerRunsOffTheMainThread() async throws {
+        let socket = URLSession.shared.webSocketTask(with: try XCTUnwrap(URL(string: "ws://127.0.0.1:9/")))
+        socket.resume()
+        sendKeepAlivePing(socket)
+        try await Task.sleep(for: .seconds(1.5))
+        socket.cancel(with: .goingAway, reason: nil)
+    }
+
     func testRedAlertAreaFilter() {
         let alert = RedAlert(id: "1", threat: 0, cities: ["תל אביב - יפו", "חולון"], isDrill: false)
         XCTAssertTrue(alert.matches(areas: []), "no filter means every area")
