@@ -88,7 +88,7 @@ final class RedAlertMonitor: ObservableObject {
             let keepAlive = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(25))
-                    socket.sendPing { _ in }
+                    Self.ping(socket)
                 }
             }
             do {
@@ -111,6 +111,13 @@ final class RedAlertMonitor: ObservableObject {
             failures += 1
             try? await Task.sleep(for: .seconds(min(60, 1 << min(failures, 6))))
         }
+    }
+
+    /// URLSession calls the pong handler on its own queue. The closure must be created
+    /// outside the main actor: one formed in main-actor code is checked to run on the
+    /// main thread, and that check crashed the app on the first ping.
+    nonisolated private static func ping(_ socket: URLSessionWebSocketTask) {
+        socket.sendPing { _ in }
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message) {
