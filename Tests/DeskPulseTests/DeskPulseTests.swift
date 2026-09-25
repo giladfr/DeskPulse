@@ -47,6 +47,24 @@ final class DeskPulseTests: XCTestCase {
         ))
     }
 
+    func testIncomingAlertRuleRecordsOnlyNewMatchingHeadlines() {
+        let model = DashboardModel()
+        if !model.incomingAlertDetectionEnabled { model.toggleIncomingAlertDetection() }
+        let old = FeedItem(title: "צבע אדום בעוטף", link: URL(string: "https://example.com/1"), date: nil)
+        let routine = FeedItem(title: "עדכון שגרתי", link: URL(string: "https://example.com/2"), date: nil)
+
+        // The first fetch only sets a baseline, even if it contains an alert.
+        model.processIncomingAlertRule([old])
+        XCTAssertNil(model.latestIncomingAlert)
+
+        model.processIncomingAlertRule([routine, old])
+        XCTAssertNil(model.latestIncomingAlert)
+
+        let fresh = FeedItem(title: "דיווח: צבע אדום באשקלון", link: URL(string: "https://example.com/3"), date: nil)
+        model.processIncomingAlertRule([fresh, routine, old])
+        XCTAssertEqual(model.latestIncomingAlert?.title, fresh.title)
+    }
+
     func testAMDTradingSessionBoundariesUseEasternTime() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))

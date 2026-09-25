@@ -101,6 +101,13 @@ enum DashboardLayoutSelection: Equatable {
     case war
 }
 
+/// A new Rotter headline that matched the incoming-alert rule.
+struct IncomingAlert: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let receivedAt: Date
+}
+
 struct FeedItem: Identifiable, Equatable {
     var id: String { link?.absoluteString ?? title }
     let title: String

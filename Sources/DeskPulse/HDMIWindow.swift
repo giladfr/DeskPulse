@@ -16,8 +16,22 @@ enum HDMIWindow {
 /// alongside the dashboard. Closing the window releases the capture card.
 struct HDMIWindowView: View {
     @StateObject private var capture = HDMICaptureModel()
+    @EnvironmentObject private var dashboard: DashboardModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    /// Alerts from before this screen opened were already visible on the dashboard.
+    @State private var openedAt = Date()
+    @State private var dismissedAlertID: UUID?
+
+    /// A new incoming alert that hasn't been acknowledged on this screen yet.
+    private var visibleAlert: IncomingAlert? {
+        guard
+            let alert = dashboard.latestIncomingAlert,
+            alert.receivedAt >= openedAt,
+            alert.id != dismissedAlertID
+        else { return nil }
+        return alert
+    }
 
     var body: some View {
         if HDMIWindow.wasRequested {
@@ -26,11 +40,81 @@ struct HDMIWindowView: View {
                 onShowDashboard: { openWindow(id: DashboardWindow.id) },
                 onClose: { dismissWindow(id: HDMIWindow.id) }
             )
+            .overlay(alignment: .top) {
+                if let alert = visibleAlert {
+                    IncomingAlertBanner(
+                        alert: alert,
+                        onShowSituation: {
+                            dismissedAlertID = alert.id
+                            openWindow(id: DashboardWindow.id)
+                        },
+                        onDismiss: { dismissedAlertID = alert.id }
+                    )
+                    .padding(.top, 72)
+                    .padding(.horizontal, 24)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy(duration: 0.3), value: visibleAlert?.id)
+            .onChange(of: dashboard.latestIncomingAlert?.id) { _, _ in
+                guard visibleAlert != nil else { return }
+                NSSound(named: NSSound.Name("Sosumi"))?.play()
+            }
             .background(FullScreenWindow())
         } else {
             Color.black
                 .onAppear { dismissWindow(id: HDMIWindow.id) }
         }
+    }
+}
+
+/// Shown on the HDMI screen when the incoming-alert rule fires, since the dashboard
+/// that switches to the situation layout is in another Space.
+struct IncomingAlertBanner: View {
+    let alert: IncomingAlert
+    let onShowSituation: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 24, weight: .bold))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Incoming alert · \(alert.receivedAt.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 11, weight: .heavy))
+                    .textCase(.uppercase)
+                    .tracking(0.8)
+                    .opacity(0.85)
+                Text(alert.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: onShowSituation) {
+                Label("Show situation", systemImage: "shield.lefthalf.filled")
+                    .font(.system(size: 13, weight: .bold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.white)
+            .foregroundStyle(.red)
+            .keyboardShortcut(.defaultAction)
+            .help("Switch to the dashboard's situation layout (Return)")
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss this alert")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: 760)
+        .background(Color(red: 0.78, green: 0.06, blue: 0.08).opacity(0.95), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.25)))
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
     }
 }
 

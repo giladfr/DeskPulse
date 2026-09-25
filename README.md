@@ -30,7 +30,9 @@ the information I actually want in front of me.
   Israel Red Alert, Israeli radio, live TV, and every news stream. It can be saved
   like the other layouts.
 - **Incoming-alert automation.** An optional antenna rule watches newly arriving
-  Rotter headlines for `צבע אדום` and switches to the situation layout.
+  Rotter headlines for `צבע אדום` and switches to the situation layout. If the
+  HDMI screen is open, a red banner with the headline and a sound appear there
+  too, with a one-click (or Return) jump to the dashboard.
 - **Real resource control.** Toggling a widget off destroys its view, web session,
   player, and timers instead of merely hiding pixels.
 - **Built for a permanent display.** Full screen, dark, dense, fluid, and quick to
