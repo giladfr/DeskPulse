@@ -8,10 +8,10 @@ enum DataService {
         return URLSession(configuration: configuration)
     }()
 
-    static func fetchAMDQuote() async -> AMDQuoteSnapshot? {
-        let url = URL(
-            string: "https://api.nasdaq.com/api/quote/AMD/info?assetclass=stocks"
-        )!
+    /// The `data` object of a Nasdaq quote API response. The API rejects requests
+    /// that don't look like they come from a browser.
+    private static func nasdaqPayload(_ address: String) async -> [String: Any]? {
+        guard let url = URL(string: address) else { return nil }
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(
@@ -22,8 +22,14 @@ enum DataService {
         guard
             let (data, response) = try? await session.data(for: request),
             (response as? HTTPURLResponse)?.statusCode == 200,
-            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let payload = root["data"] as? [String: Any],
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return root["data"] as? [String: Any]
+    }
+
+    static func fetchAMDQuote() async -> AMDQuoteSnapshot? {
+        guard
+            let payload = await nasdaqPayload("https://api.nasdaq.com/api/quote/AMD/info?assetclass=stocks"),
             let primary = payload["primaryData"] as? [String: Any]
         else { return nil }
 
@@ -53,21 +59,8 @@ enum DataService {
     }
 
     static func fetchAMDSessionChart() async -> AMDSessionChart? {
-        let url = URL(
-            string: "https://api.nasdaq.com/api/quote/AMD/chart?assetclass=stocks"
-        )!
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         guard
-            let (data, response) = try? await session.data(for: request),
-            (response as? HTTPURLResponse)?.statusCode == 200,
-            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let payload = root["data"] as? [String: Any],
+            let payload = await nasdaqPayload("https://api.nasdaq.com/api/quote/AMD/chart?assetclass=stocks"),
             let rows = payload["chart"] as? [[String: Any]]
         else { return nil }
 
@@ -259,12 +252,17 @@ enum DataService {
         return .regular
     }
 
-    static func tradingSession(timeLabel: String) -> AMDTradingSession? {
+    /// Shared because it parses every point of every chart refresh.
+    nonisolated(unsafe) private static let chartTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "America/New_York")
         formatter.dateFormat = "h:mm a 'ET'"
-        guard let time = formatter.date(from: timeLabel) else { return nil }
+        return formatter
+    }()
+
+    static func tradingSession(timeLabel: String) -> AMDTradingSession? {
+        guard let time = chartTimeFormatter.date(from: timeLabel) else { return nil }
         return tradingSession(at: time)
     }
 

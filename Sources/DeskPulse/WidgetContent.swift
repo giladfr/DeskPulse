@@ -396,19 +396,11 @@ private struct ClocksWidget: View {
     }
 
     private func time(_ date: Date, zone: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: zone)
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
+        CachedDateFormatter.string(from: date, format: "HH:mm:ss", timeZone: zone)
     }
 
     private func localDate(_ date: Date, zone: String) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: zone)
-        formatter.dateFormat = "EEE, MMM d"
-        return formatter.string(from: date)
+        CachedDateFormatter.string(from: date, format: "EEE, MMM d", timeZone: zone)
     }
 
 }
@@ -537,11 +529,8 @@ private struct WeatherWidget: View {
     }
 
     private func forecastDay(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "America/Chicago")
-        formatter.dateFormat = "EEE"
-        return formatter.string(from: date).uppercased()
+        CachedDateFormatter.string(from: date, format: "EEE", timeZone: "America/Chicago")
+            .uppercased()
     }
 
     private func weatherSymbol(_ code: Int) -> String {
@@ -656,13 +645,12 @@ private struct FeedWidget: View {
 
     private func feedTime(_ date: Date?) -> String {
         guard let date else { return "—:—" }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: source.isRTL ? "he_IL" : "en_US_POSIX")
-        formatter.timeZone = TimeZone(
-            identifier: source.isRTL ? "Asia/Jerusalem" : "America/Chicago"
+        return CachedDateFormatter.string(
+            from: date,
+            format: "HH:mm",
+            timeZone: source.isRTL ? "Asia/Jerusalem" : "America/Chicago",
+            locale: source.isRTL ? "he_IL" : "en_US_POSIX"
         )
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
     }
 }
 
@@ -770,5 +758,30 @@ private struct LoadingState: View {
             ProgressView().controlSize(.small)
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Date formatters are expensive to create, and the clocks alone formatted several
+/// times a second, so each format/zone/locale combination is built once.
+@MainActor
+enum CachedDateFormatter {
+    private static var formatters: [String: DateFormatter] = [:]
+
+    static func string(
+        from date: Date,
+        format: String,
+        timeZone: String,
+        locale: String = "en_US_POSIX"
+    ) -> String {
+        let key = "\(format)|\(timeZone)|\(locale)"
+        if let formatter = formatters[key] {
+            return formatter.string(from: date)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: locale)
+        formatter.timeZone = TimeZone(identifier: timeZone)
+        formatter.dateFormat = format
+        formatters[key] = formatter
+        return formatter.string(from: date)
     }
 }
