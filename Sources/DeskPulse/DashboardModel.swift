@@ -187,6 +187,10 @@ final class DashboardModel: ObservableObject {
         Task { await refresh() }
     }
 
+    /// Locks immediately, like Control–Command–Q. `SACLockScreenImmediate` is a private
+    /// symbol in login.framework: it isn't App Store–safe and may disappear in a macOS
+    /// update, in which case this falls back to sleeping the display (which locks when
+    /// "Require password after screen saver begins or display is turned off" is set).
     func lockScreen() {
         let frameworkPath = "/System/Library/PrivateFrameworks/login.framework/login"
         if let handle = dlopen(frameworkPath, RTLD_LAZY),
@@ -333,7 +337,7 @@ final class DashboardModel: ObservableObject {
                DashboardLayoutSnapshot.self,
                from: data
            ) {
-            let snapshot = normalizedWarSnapshot(storedSnapshot)
+            let snapshot = Self.normalizedWarSnapshot(storedSnapshot)
             widgets = snapshot.widgets
             hiddenKinds = snapshot.hiddenKinds
             if snapshot != storedSnapshot,
@@ -626,7 +630,8 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    private func normalizedWarSnapshot(
+    /// Upgrades a situation layout saved before CNN Live replaced Channel 13 there.
+    static func normalizedWarSnapshot(
         _ snapshot: DashboardLayoutSnapshot
     ) -> DashboardLayoutSnapshot {
         var migratedWidgets = snapshot.widgets

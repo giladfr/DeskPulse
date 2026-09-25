@@ -14,7 +14,13 @@ struct DashboardView: View {
             .background(Color.black)
             .ignoresSafeArea()
             .background(FullScreenWindow())
-            .onAppear { model.start() }
+            .onAppear {
+                model.start()
+                GlobalHotKey.shared.registerToggleHDMIScreen()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: toggleHDMIScreenNotification)) { _ in
+                toggleHDMIScreen()
+            }
             .onChange(of: model.warActivationRequest) { _, request in
                 guard request > 0, model.activeLayout != .war else { return }
                 withAnimation(.snappy(duration: 0.45)) {
@@ -92,6 +98,18 @@ struct DashboardView: View {
         }
     }
 
+    /// Control–Command–H: from the HDMI screen go to the dashboard; from anywhere
+    /// else (including other apps) open or switch to the HDMI screen.
+    private func toggleHDMIScreen() {
+        if NSApp.isActive, HDMIWindow.window?.isKeyWindow == true {
+            openWindow(id: DashboardWindow.id)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            HDMIWindow.wasRequested = true
+            openWindow(id: HDMIWindow.id)
+        }
+    }
+
     private var refreshHelp: String {
         if model.isRefreshing { return "Refreshing news and weather…" }
         let base = "Refresh news and weather now (they also refresh every 2 minutes)"
@@ -153,7 +171,7 @@ struct DashboardView: View {
                     Image(systemName: "rectangle.on.rectangle.angled")
                 }
                 .buttonStyle(HeaderButtonStyle())
-                .help("Open the HDMI input in its own full-screen Space — swipe between it and the dashboard")
+                .help("Open the HDMI input in its own full-screen Space — swipe between it and the dashboard (⌃⌘H from anywhere)")
             }
             Spacer()
             HStack(spacing: 5) {

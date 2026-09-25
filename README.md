@@ -41,7 +41,8 @@ the information I actually want in front of me.
   fills the Mac display from a capture card without routing video through a web
   view. It opens in its own full-screen Space, so you can swipe between the Mac
   desktop, the live dashboard, and the other laptop. The card's black bars are
-  cropped automatically, and closing the HDMI screen releases the camera.
+  cropped automatically, its sound plays through the Mac (with mute and volume),
+  and closing the HDMI screen releases the card.
 
 ## Widgets
 
@@ -69,7 +70,8 @@ song recognition with prominent album art.
 - The **lock** button locks the Mac. The sleep button toggles display sleep
   prevention while DeskPulse is running.
 - Press **Control–Command–F** for full screen.
-- Use the overlapping-displays button to open the HDMI screen in its own Space.
+- Use the overlapping-displays button, or **Control–Command–H** from any app, to
+  open the HDMI screen in its own Space (press it again there to return).
   Swipe between Spaces, or press **Escape** to jump to the dashboard; the HDMI
   picture keeps running. **Close** (or **Command–W**) releases the capture card.
 

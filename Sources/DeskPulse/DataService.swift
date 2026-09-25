@@ -8,10 +8,10 @@ enum DataService {
         return URLSession(configuration: configuration)
     }()
 
-    static func fetchAMDQuote() async -> AMDQuoteSnapshot? {
-        let url = URL(
-            string: "https://api.nasdaq.com/api/quote/AMD/info?assetclass=stocks"
-        )!
+    /// The `data` object of a Nasdaq quote API response. The API rejects requests
+    /// that don't look like they come from a browser.
+    private static func nasdaqPayload(_ address: String) async -> [String: Any]? {
+        guard let url = URL(string: address) else { return nil }
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(
@@ -22,8 +22,14 @@ enum DataService {
         guard
             let (data, response) = try? await session.data(for: request),
             (response as? HTTPURLResponse)?.statusCode == 200,
-            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let payload = root["data"] as? [String: Any],
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return root["data"] as? [String: Any]
+    }
+
+    static func fetchAMDQuote() async -> AMDQuoteSnapshot? {
+        guard
+            let payload = await nasdaqPayload("https://api.nasdaq.com/api/quote/AMD/info?assetclass=stocks"),
             let primary = payload["primaryData"] as? [String: Any]
         else { return nil }
 
@@ -53,21 +59,8 @@ enum DataService {
     }
 
     static func fetchAMDSessionChart() async -> AMDSessionChart? {
-        let url = URL(
-            string: "https://api.nasdaq.com/api/quote/AMD/chart?assetclass=stocks"
-        )!
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent"
-        )
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         guard
-            let (data, response) = try? await session.data(for: request),
-            (response as? HTTPURLResponse)?.statusCode == 200,
-            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let payload = root["data"] as? [String: Any],
+            let payload = await nasdaqPayload("https://api.nasdaq.com/api/quote/AMD/chart?assetclass=stocks"),
             let rows = payload["chart"] as? [[String: Any]]
         else { return nil }
 
@@ -146,8 +139,12 @@ enum DataService {
 
     static func fetchFeed(_ url: URL) async -> [FeedItem] {
         guard let (data, _) = try? await session.data(from: url) else { return [] }
-        let parser = FeedParser()
-        return parser.parse(data: data)
+        return parseFeed(data)
+    }
+
+    /// Parses RSS `<item>` or Atom `<entry>` elements; keeps the first 20.
+    static func parseFeed(_ data: Data) -> [FeedItem] {
+        FeedParser().parse(data: data)
     }
 
     static func decodeHTMLEntities(_ value: String) -> String {
@@ -198,7 +195,12 @@ enum DataService {
         guard let (data, _) = try? await session.data(from: pageURL),
               let html = String(data: data, encoding: .utf8)
         else { return nil }
+        return parseLiveTVPlayerSource(html: html)
+    }
 
+    /// Finds the stream in a channel page: an HLS playlist in `m3u8Url`, or else the
+    /// embedded player's `src`.
+    static func parseLiveTVPlayerSource(html: String) -> LiveTVPlayerSource? {
         if let marker = html.range(of: "var m3u8Url = '"),
            let valueEnd = html[marker.upperBound...].firstIndex(of: "'") {
             let value = String(html[marker.upperBound..<valueEnd])
@@ -250,12 +252,17 @@ enum DataService {
         return .regular
     }
 
-    static func tradingSession(timeLabel: String) -> AMDTradingSession? {
+    /// Shared because it parses every point of every chart refresh.
+    nonisolated(unsafe) private static let chartTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "America/New_York")
         formatter.dateFormat = "h:mm a 'ET'"
-        guard let time = formatter.date(from: timeLabel) else { return nil }
+        return formatter
+    }()
+
+    static func tradingSession(timeLabel: String) -> AMDTradingSession? {
+        guard let time = chartTimeFormatter.date(from: timeLabel) else { return nil }
         return tradingSession(at: time)
     }
 
@@ -316,7 +323,7 @@ private final class FeedParser: NSObject, XMLParserDelegate {
                 items.append(FeedItem(
                     title: cleanTitle,
                     link: URL(string: link.trimmingCharacters(in: .whitespacesAndNewlines)),
-                    date: parseDate(date)
+                    date: Self.parseDate(date)
                 ))
             }
             insideItem = false
@@ -324,15 +331,32 @@ private final class FeedParser: NSObject, XMLParserDelegate {
         currentElement = ""
     }
 
-    private func parseDate(_ value: String) -> Date? {
+    // Created once: formatters are expensive, and parsing is safe to share.
+    nonisolated(unsafe) private static let isoFormatter = ISO8601DateFormatter()
+    nonisolated(unsafe) private static let isoFractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let rfc822Formatters: [DateFormatter] = [
+        "EEE, dd MMM yyyy HH:mm:ss Z",
+        "EEE, dd MMM yyyy HH:mm:ss zzz",
+        "dd MMM yyyy HH:mm:ss Z"
+    ].map {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        for format in ["EEE, dd MMM yyyy HH:mm:ss Z", "yyyy-MM-dd'T'HH:mm:ssZ"] {
-            formatter.dateFormat = format
-            if let result = formatter.date(from: value.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return result
-            }
+        formatter.dateFormat = $0
+        return formatter
+    }
+
+    /// RSS uses RFC 822 dates (`pubDate`); Atom uses ISO 8601, sometimes with
+    /// fractional seconds or a `Z` suffix.
+    static func parseDate(_ value: String) -> Date? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let date = isoFormatter.date(from: trimmed) ?? isoFractionalFormatter.date(from: trimmed) {
+            return date
         }
-        return nil
+        return rfc822Formatters.lazy.compactMap { $0.date(from: trimmed) }.first
     }
 }

@@ -260,4 +260,106 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertEqual(CaptureGeometry.shapeName(width: 1920, height: 1080), "16:9")
         XCTAssertNil(CaptureGeometry.shapeName(width: 1000, height: 1000))
     }
+
+    // MARK: Feed parsing
+
+    func testParsesRSSItemsSkippingEmptyTitles() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><title>Channel title is not an item</title>
+          <item>
+            <title>First &amp;amp; best</title>
+            <link>https://example.com/a</link>
+            <pubDate>Thu, 24 Sep 2026 10:15:00 +0300</pubDate>
+          </item>
+          <item><title>   </title><link>https://example.com/empty</link></item>
+          <item><title>Second</title><guid>https://example.com/b</guid></item>
+        </channel></rss>
+        """
+        let items = DataService.parseFeed(Data(xml.utf8))
+        XCTAssertEqual(items.map(\.title), ["First & best", "Second"])
+        XCTAssertEqual(items.map(\.link), [
+            URL(string: "https://example.com/a"),
+            URL(string: "https://example.com/b")
+        ])
+        let expected = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-24T07:15:00Z"))
+        XCTAssertEqual(items.first?.date, expected)
+        XCTAssertNil(items.last?.date)
+    }
+
+    func testParsesAtomEntriesWithISODates() throws {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <title>Feed</title>
+          <updated>2026-09-24T09:00:00Z</updated>
+          <entry>
+            <title>Atom story</title>
+            <link href="https://example.com/atom"/>
+            <updated>2026-09-24T07:15:00Z</updated>
+          </entry>
+          <entry>
+            <title>Fractional seconds</title>
+            <link href="https://example.com/fractional"/>
+            <published>2026-09-24T07:15:00.250Z</published>
+          </entry>
+        </feed>
+        """
+        let items = DataService.parseFeed(Data(xml.utf8))
+        XCTAssertEqual(items.map(\.title), ["Atom story", "Fractional seconds"])
+        XCTAssertEqual(items.first?.link, URL(string: "https://example.com/atom"))
+        let whole = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-24T07:15:00Z"))
+        XCTAssertEqual(items.first?.date, whole)
+        let fractional = try XCTUnwrap(items.last?.date)
+        XCTAssertEqual(fractional.timeIntervalSince(whole), 0.25, accuracy: 0.001)
+    }
+
+    func testMalformedFeedYieldsNoItemsInsteadOfCrashing() {
+        XCTAssertTrue(DataService.parseFeed(Data("<html>not a feed".utf8)).isEmpty)
+    }
+
+    // MARK: Live TV page scraping
+
+    func testLiveTVPageWithHLSPlaylist() {
+        let html = "<script>var m3u8Url = 'https://cdn.example.com/live.m3u8?a=1&amp;b=2';</script>"
+        XCTAssertEqual(
+            DataService.parseLiveTVPlayerSource(html: html),
+            .hls(URL(string: "https://cdn.example.com/live.m3u8?a=1&b=2")!)
+        )
+    }
+
+    func testLiveTVPageWithEmbeddedPlayer() {
+        let html = """
+        <div><iframe class="videoplayer" allowfullscreen src="https://player.example.com/embed?x=1&amp;y=2"></iframe></div>
+        """
+        XCTAssertEqual(
+            DataService.parseLiveTVPlayerSource(html: html),
+            .web(URL(string: "https://player.example.com/embed?x=1&y=2")!)
+        )
+    }
+
+    func testLiveTVPageWithoutPlayerIsNil() {
+        XCTAssertNil(DataService.parseLiveTVPlayerSource(html: "<html><body>Offline</body></html>"))
+    }
+
+    // MARK: Situation layout upgrade
+
+    func testOldSituationLayoutSwapsChannel13ForCNNLive() {
+        let channel13 = DashboardWidget(id: UUID(), kind: .liveTV13, x: 1, y: 2, width: 300, height: 200)
+        let upgraded = DashboardModel.normalizedWarSnapshot(DashboardLayoutSnapshot(
+            widgets: [channel13],
+            hiddenKinds: [.liveTVCNN]
+        ))
+        XCTAssertEqual(upgraded.widgets.map(\.kind), [.liveTVCNN])
+        XCTAssertEqual(upgraded.widgets.first?.x, 1)
+        XCTAssertTrue(upgraded.hiddenKinds.contains(.liveTV13))
+        XCTAssertFalse(upgraded.hiddenKinds.contains(.liveTVCNN))
+    }
+
+    func testCurrentSituationLayoutKeepsItsWidgets() {
+        let cnn = DashboardWidget(id: UUID(), kind: .liveTVCNN, x: 0, y: 0, width: 300, height: 200)
+        let channel13 = DashboardWidget(id: UUID(), kind: .liveTV13, x: 0, y: 0, width: 300, height: 200)
+        let snapshot = DashboardLayoutSnapshot(widgets: [cnn, channel13], hiddenKinds: [.liveTV13])
+        XCTAssertEqual(DashboardModel.normalizedWarSnapshot(snapshot), snapshot)
+    }
 }

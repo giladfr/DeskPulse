@@ -472,6 +472,7 @@ enum HDMISourceShape: String, CaseIterable, Identifiable {
 
 struct HDMICaptureView: View {
     @ObservedObject var model: HDMICaptureModel
+    @ObservedObject var audio: HDMIAudio
     /// Switches to the dashboard's Space; the HDMI picture keeps running.
     let onShowDashboard: () -> Void
     /// Closes the HDMI window and releases the capture card.
@@ -481,6 +482,7 @@ struct HDMICaptureView: View {
     @AppStorage("hdmi.source-shape.v1") private var sourceShape: HDMISourceShape = .automatic
     @State private var controlsVisible = true
     @State private var pointerOverControls = false
+    @State private var showsAudioControls = false
     @State private var hideControlsTask: Task<Void, Never>?
 
     var body: some View {
@@ -568,6 +570,19 @@ struct HDMICaptureView: View {
         return "Auto · \(shape)"
     }
 
+    private var audioLabel: String {
+        switch audio.status {
+        case .playing: audio.isMuted ? "Muted" : "Sound"
+        case .off: "Sound"
+        case .noDevice, .denied: "No sound"
+        }
+    }
+
+    private var audioSymbol: String {
+        if case .playing = audio.status, !audio.isMuted { return "speaker.wave.2.fill" }
+        return "speaker.slash.fill"
+    }
+
     /// Shows the toolbar on pointer movement and hides it, with the cursor, once idle,
     /// so the full HDMI picture stays unobstructed.
     private func showControlsBriefly() {
@@ -582,7 +597,12 @@ struct HDMICaptureView: View {
         hideControlsTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(seconds))
             // Keep the toolbar up while it is in use or while there is no live picture.
-            guard !Task.isCancelled, !pointerOverControls, case .live = model.state else { return }
+            guard
+                !Task.isCancelled,
+                !pointerOverControls,
+                !showsAudioControls,
+                case .live = model.state
+            else { return }
             withAnimation(.easeOut(duration: 0.3)) { controlsVisible = false }
             NSCursor.setHiddenUntilMouseMoves(true)
         }
@@ -637,6 +657,15 @@ struct HDMICaptureView: View {
                     )
                 }
                 .help(fillsScreen ? "Fill the Mac display, cropping the picture's edges if its shape differs" : "Show the whole picture without its black bars")
+                Button {
+                    showsAudioControls.toggle()
+                } label: {
+                    Label(audioLabel, systemImage: audioSymbol)
+                }
+                .help("Sound from the HDMI source")
+                .popover(isPresented: $showsAudioControls, arrowEdge: .bottom) {
+                    HDMIAudioControls(audio: audio)
+                }
                 Button {
                     enhancesColor.toggle()
                 } label: {
