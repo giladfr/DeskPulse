@@ -11,7 +11,7 @@ struct WidgetContent: View {
             allowedHosts: ["google.com", "googleusercontent.com", "gstatic.com"],
             pageZoom: 0.72
         )
-        case .stocks: StocksDashboardView()
+        case .stocks: StocksWidget()
         case .clocks: ClocksWidget()
         case .date: DateWidget()
         case .weather: WeatherWidget()
@@ -35,321 +35,15 @@ struct WidgetContent: View {
         case .liveTV13: LiveTVWidget(channel: "13", label: "Channel 13")
         case .liveTVCNN: LiveTVWidget(channel: "cnn", label: "CNN")
         case .radio: RadioWidget()
+        case .myNews: MyNewsWidget()
         }
-    }
-}
-
-private struct StocksDashboardView: View {
-    @EnvironmentObject private var model: DashboardModel
-    @StateObject private var quoteModel = AMDQuoteModel()
-
-    var body: some View {
-        Group {
-            if let quote = quoteModel.quote {
-                AMDQuoteContent(
-                    quote: quote,
-                    chart: quoteModel.chart,
-                    isUpdating: quoteModel.isUpdating
-                )
-            } else {
-                LoadingState(label: "Connecting to Nasdaq…")
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            model.open(
-                URL(string: "https://www.nasdaq.com/market-activity/stocks/amd/real-time")!
-            )
-        }
-        .task { await quoteModel.poll() }
-        .help("Open AMD on Nasdaq")
-    }
-}
-
-@MainActor
-private final class AMDQuoteModel: ObservableObject {
-    @Published var quote: AMDQuoteSnapshot?
-    @Published var chart: AMDSessionChart?
-    @Published var isUpdating = false
-
-    func poll() async {
-        while !Task.isCancelled {
-            isUpdating = true
-            async let newQuote = DataService.fetchAMDQuote()
-            async let newChart = DataService.fetchAMDSessionChart()
-            let (latest, latestChart) = await (newQuote, newChart)
-            if let latest {
-                quote = latest
-            }
-            if let latestChart {
-                chart = latestChart
-            }
-            isUpdating = false
-            try? await Task.sleep(for: .seconds(10))
-        }
-    }
-}
-
-private struct AMDQuoteContent: View {
-    let quote: AMDQuoteSnapshot
-    let chart: AMDSessionChart?
-    let isUpdating: Bool
-
-    private var positive: Bool { quote.change >= 0 }
-    private var accent: Color { positive ? .green : .red }
-
-    var body: some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 10) {
-                identity
-                Spacer(minLength: 2)
-                price
-            }
-            if let chart {
-                AMDSessionGraph(
-                    chart: chart,
-                    currentPrice: quote.price,
-                    extendedSession: DataService.tradingSession(at: Date())
-                )
-                    .frame(maxHeight: .infinity)
-                chartFooter(chart)
-            } else {
-                details
-                    .frame(maxHeight: .infinity)
-            }
-        }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 7)
-        .background {
-            RadialGradient(
-                colors: [accent.opacity(0.12), .clear],
-                center: .bottomLeading,
-                startRadius: 8,
-                endRadius: 280
-            )
-        }
-    }
-
-    private var identity: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 7) {
-                Text("AMD")
-                    .font(.system(size: 18, weight: .black, design: .rounded))
-                Circle()
-                    .fill(quote.isExtendedHours ? Color.orange : Color.green)
-                    .frame(width: 7, height: 7)
-            }
-            Text("NASDAQ · \(quote.marketStatus.uppercased())")
-                .font(.system(size: 8, weight: .bold))
-                .tracking(0.8)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var price: some View {
-        VStack(alignment: .trailing, spacing: 3) {
-            Text(quote.price, format: .currency(code: "USD").precision(.fractionLength(2)))
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .contentTransition(.numericText())
-            Text(String(
-                format: "%+.2f  (%+.2f%%)",
-                quote.change,
-                quote.changePercent
-            ))
-            .font(.system(size: 11, weight: .bold, design: .rounded))
-            .monospacedDigit()
-            .foregroundStyle(accent)
-        }
-    }
-
-    private func chartFooter(_ chart: AMDSessionChart) -> some View {
-        HStack(spacing: 8) {
-            Text("PREV CLOSE \(chart.previousClose, format: .currency(code: "USD").precision(.fractionLength(2)))")
-            Spacer()
-            if quote.isExtendedHours {
-                HStack(spacing: 4) {
-                    Circle().fill(.orange).frame(width: 4, height: 4)
-                    Text(quote.marketStatus.uppercased())
-                }
-            }
-            Text(chart.timeAsOf)
-                .lineLimit(1)
-        }
-        .font(.system(size: 7.5, weight: .bold, design: .rounded))
-        .foregroundStyle(.tertiary)
-        .monospacedDigit()
-    }
-
-    private var details: some View {
-        VStack(alignment: .trailing, spacing: 4) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(quote.isRealTime ? Color.green : Color.orange)
-                    .frame(width: 6, height: 6)
-                Text(quote.isRealTime ? "NASDAQ REAL TIME" : "QUOTE")
-                    .font(.system(size: 8, weight: .bold))
-                    .tracking(0.7)
-                if isUpdating {
-                    ProgressView().controlSize(.mini).scaleEffect(0.55)
-                }
-            }
-            .foregroundStyle(.secondary)
-            if let bid = quote.bid, let ask = quote.ask {
-                Text("BID \(bid, specifier: "%.2f")  ·  ASK \(ask, specifier: "%.2f")")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            Text(quote.tradeTime)
-                .font(.system(size: 8))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-        }
-    }
-}
-
-private struct AMDSessionGraph: View {
-    let chart: AMDSessionChart
-    let currentPrice: Double
-    let extendedSession: AMDTradingSession
-
-    var body: some View {
-        Canvas { context, size in
-            let displayedPoints = visiblePoints
-            guard displayedPoints.count > 1,
-                  let firstTime = displayedPoints.first?.timestamp.timeIntervalSince1970,
-                  let lastTime = displayedPoints.last?.timestamp.timeIntervalSince1970
-            else { return }
-
-            let prices = displayedPoints.map(\.price) + [chart.previousClose, currentPrice]
-            guard let rawMinimum = prices.min(), let rawMaximum = prices.max() else { return }
-            let rawRange = max(rawMaximum - rawMinimum, 0.5)
-            let minimum = rawMinimum - rawRange * 0.08
-            let maximum = rawMaximum + rawRange * 0.08
-            let timeRange = max(lastTime - firstTime, 1)
-
-            func point(for item: AMDChartPoint) -> CGPoint {
-                CGPoint(
-                    x: size.width * (item.timestamp.timeIntervalSince1970 - firstTime) / timeRange,
-                    y: size.height * (1 - (item.price - minimum) / (maximum - minimum))
-                )
-            }
-            func yPosition(_ price: Double) -> CGFloat {
-                size.height * (1 - (price - minimum) / (maximum - minimum))
-            }
-
-            var baseline = Path()
-            let baselineY = yPosition(chart.previousClose)
-            baseline.move(to: CGPoint(x: 0, y: baselineY))
-            baseline.addLine(to: CGPoint(x: size.width, y: baselineY))
-            context.stroke(
-                baseline,
-                with: .color(.secondary.opacity(0.52)),
-                style: StrokeStyle(lineWidth: 1, dash: [3, 4])
-            )
-
-            if let marketOpen = displayedPoints.first(where: { $0.session == .regular }) {
-                let openX = point(for: marketOpen).x
-                var sessionDivider = Path()
-                sessionDivider.move(to: CGPoint(x: openX, y: 0))
-                sessionDivider.addLine(to: CGPoint(x: openX, y: size.height))
-                context.stroke(
-                    sessionDivider,
-                    with: .color(.secondary.opacity(0.42)),
-                    style: StrokeStyle(lineWidth: 1, dash: [2, 4])
-                )
-            }
-
-            for index in 1..<displayedPoints.count {
-                let previous = displayedPoints[index - 1]
-                let current = displayedPoints[index]
-                let previousPoint = point(for: previous)
-                let currentPoint = point(for: current)
-                let previousIsAbove = previous.price >= chart.previousClose
-                let currentIsAbove = current.price >= chart.previousClose
-
-                if previousIsAbove == currentIsAbove {
-                    stroke(
-                        from: previousPoint,
-                        to: currentPoint,
-                        color: previousIsAbove ? .green : .red,
-                        in: &context
-                    )
-                } else {
-                    let fraction = (chart.previousClose - previous.price)
-                        / (current.price - previous.price)
-                    let crossing = CGPoint(
-                        x: previousPoint.x + (currentPoint.x - previousPoint.x) * fraction,
-                        y: baselineY
-                    )
-                    stroke(
-                        from: previousPoint,
-                        to: crossing,
-                        color: previousIsAbove ? .green : .red,
-                        in: &context
-                    )
-                    stroke(
-                        from: crossing,
-                        to: currentPoint,
-                        color: currentIsAbove ? .green : .red,
-                        in: &context
-                    )
-                }
-            }
-
-            if let last = displayedPoints.last {
-                let finalPoint = point(for: last)
-                context.fill(
-                    Path(ellipseIn: CGRect(
-                        x: finalPoint.x - 2.5, y: finalPoint.y - 2.5,
-                        width: 5, height: 5
-                    )),
-                    with: .color(last.price >= chart.previousClose ? .green : .red)
-                )
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("AMD current trading session chart")
-        .accessibilityValue(
-            "Current price \(currentPrice), previous close \(chart.previousClose)"
-        )
-    }
-
-    private var visiblePoints: [AMDChartPoint] {
-        switch extendedSession {
-        case .premarket:
-            return chart.points.filter { $0.session == .premarket }
-        case .afterHours:
-            return chart.points
-        case .regular:
-            return chart.points.filter { $0.session != .afterHours }
-        }
-    }
-
-    private func stroke(
-        from start: CGPoint,
-        to end: CGPoint,
-        color: Color,
-        in context: inout GraphicsContext
-    ) {
-        var path = Path()
-        path.move(to: start)
-        path.addLine(to: end)
-        context.stroke(
-            path,
-            with: .color(color),
-            style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round)
-        )
     }
 }
 
 private struct ClocksWidget: View {
-    private let clocks: [(String, String, String)] = [
-        ("Austin", "America/Chicago", "🇺🇸"),
-        ("Israel", "Asia/Jerusalem", "🇮🇱"),
-        ("China", "Asia/Shanghai", "🇨🇳"),
-        ("India", "Asia/Kolkata", "🇮🇳")
-    ]
+    @EnvironmentObject private var settings: AppSettings
+
+    private var clocks: [WorldClock] { settings.clocks }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -359,12 +53,12 @@ private struct ClocksWidget: View {
                     max(17, min(proxy.size.width / 34, proxy.size.height / 4.6))
                 )
                 HStack(spacing: 0) {
-                    ForEach(Array(clocks.enumerated()), id: \.element.0) { index, clock in
+                    ForEach(Array(clocks.enumerated()), id: \.element.id) { index, clock in
                         VStack(spacing: 6) {
-                            Text(clock.2)
+                            Text(clock.flag.isEmpty ? "🕒" : clock.flag)
                                 .font(.system(size: 17))
-                                .accessibilityLabel("\(clock.0) country flag")
-                            Text(time(context.date, zone: clock.1))
+                                .accessibilityHidden(true)
+                            Text(time(context.date, zone: clock.timeZone))
                                 .font(.system(
                                     size: timeSize,
                                     weight: .medium,
@@ -373,10 +67,11 @@ private struct ClocksWidget: View {
                                 .monospacedDigit()
                                 .minimumScaleFactor(0.72)
                                 .lineLimit(1)
-                            Text(clock.0)
+                            Text(clock.name)
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                            Text(localDate(context.date, zone: clock.1))
+                                .lineLimit(1)
+                            Text(localDate(context.date, zone: clock.timeZone))
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
@@ -484,12 +179,16 @@ private struct WeatherWidget: View {
                         Text(weather.description)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Text(weather.location)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
                     }
                     Spacer()
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Feels \(weather.feelsLike)°", systemImage: "thermometer.medium")
                         Label("\(weather.humidity)%", systemImage: "humidity.fill")
-                        Label("\(weather.windMPH) mph", systemImage: "wind")
+                        Label("\(weather.wind) \(weather.windUnit)", systemImage: "wind")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -501,7 +200,7 @@ private struct WeatherWidget: View {
                     HStack(spacing: 0) {
                         ForEach(weather.forecast) { day in
                             VStack(spacing: 3) {
-                                Text(forecastDay(day.date))
+                                Text(forecastDay(day.date, timeZone: weather.timeZone))
                                     .font(.system(size: 8, weight: .bold, design: .rounded))
                                     .foregroundStyle(.secondary)
                                 Image(systemName: weatherSymbol(day.code))
@@ -524,12 +223,12 @@ private struct WeatherWidget: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
         } else {
-            LoadingState(label: "Loading Austin weather…")
+            LoadingState(label: "Loading \(model.settings.weatherLocation.name) weather…")
         }
     }
 
-    private func forecastDay(_ date: Date) -> String {
-        CachedDateFormatter.string(from: date, format: "EEE", timeZone: "America/Chicago")
+    private func forecastDay(_ date: Date, timeZone: String) -> String {
+        CachedDateFormatter.string(from: date, format: "EEE", timeZone: timeZone)
             .uppercased()
     }
 
@@ -648,9 +347,117 @@ private struct FeedWidget: View {
         return CachedDateFormatter.string(
             from: date,
             format: "HH:mm",
-            timeZone: source.isRTL ? "Asia/Jerusalem" : "America/Chicago",
+            timeZone: source.isRTL ? "Asia/Jerusalem" : TimeZone.current.identifier,
             locale: source.isRTL ? "he_IL" : "en_US_POSIX"
         )
+    }
+}
+
+/// Headlines from the sources chosen in Settings, merged newest first, with a chip per
+/// source to narrow the list.
+private struct MyNewsWidget: View {
+    @EnvironmentObject private var model: DashboardModel
+    @EnvironmentObject private var settings: AppSettings
+    @State private var filter: UUID?
+
+    private var enabledSources: [NewsSource] { settings.newsSources.filter(\.isEnabled) }
+
+    private var items: [NewsItem] {
+        guard let filter else { return model.myNewsItems }
+        return model.myNewsItems.filter { $0.sourceID == filter }
+    }
+
+    var body: some View {
+        if enabledSources.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "newspaper").font(.title2).foregroundStyle(.secondary)
+                Text("Choose news sources in Settings").font(.caption).foregroundStyle(.secondary)
+                SettingsLink { Text("Open Settings…") }
+                    .controlSize(.small)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.myNewsItems.isEmpty {
+            LoadingState(label: "Loading headlines…")
+        } else {
+            VStack(spacing: 0) {
+                if enabledSources.count > 1 {
+                    sourceChips
+                    Divider().opacity(0.14)
+                }
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(items) { row($0) }
+                    }
+                    .animation(.snappy(duration: 0.4), value: items.map(\.id))
+                }
+            }
+        }
+    }
+
+    private var sourceChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                chip("All", selected: filter == nil) { filter = nil }
+                ForEach(enabledSources) { source in
+                    chip(source.name, selected: filter == source.id) {
+                        filter = filter == source.id ? nil : source.id
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private func chip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    selected ? Color.teal.opacity(0.3) : Color.white.opacity(0.06),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func row(_ news: NewsItem) -> some View {
+        let rtl = news.item.title.containsRightToLeftText
+        return Button {
+            if let link = news.item.link { model.open(link) }
+        } label: {
+            VStack(alignment: rtl ? .trailing : .leading, spacing: 4) {
+                Text(news.item.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .multilineTextAlignment(rtl ? .trailing : .leading)
+                    .lineLimit(3)
+                HStack(spacing: 6) {
+                    Text(news.sourceName.uppercased())
+                        .font(.system(size: 8.5, weight: .heavy))
+                        .foregroundStyle(.teal)
+                    if let date = news.item.date {
+                        Text(date, format: .relative(presentation: .named))
+                            .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: rtl ? .trailing : .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) { Divider().opacity(0.14) }
+    }
+}
+
+extension String {
+    /// True when the text contains Hebrew or Arabic letters.
+    var containsRightToLeftText: Bool {
+        unicodeScalars.contains { (0x0590...0x08FF).contains($0.value) || (0xFB1D...0xFDFF).contains($0.value) }
     }
 }
 
@@ -751,7 +558,7 @@ private struct IsraelRedAlertWidget: View {
     }
 }
 
-private struct LoadingState: View {
+struct LoadingState: View {
     let label: String
     var body: some View {
         VStack(spacing: 10) {

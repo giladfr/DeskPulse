@@ -27,24 +27,45 @@ enum DataService {
         return root["data"] as? [String: Any]
     }
 
-    static func fetchAMDQuote() async -> AMDQuoteSnapshot? {
-        guard
-            let payload = await nasdaqPayload("https://api.nasdaq.com/api/quote/AMD/info?assetclass=stocks"),
-            let primary = payload["primaryData"] as? [String: Any]
-        else { return nil }
+    /// Nasdaq serves stocks, ETFs and indexes from the same endpoints but only
+    /// answers for the right `assetclass`.
+    static let nasdaqAssetClasses = ["stocks", "etf", "index"]
 
+    private static func nasdaqURL(_ endpoint: String, symbol: String, assetClass: String) -> String {
+        let escaped = symbol.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? symbol
+        return "https://api.nasdaq.com/api/quote/\(escaped)/\(endpoint)?assetclass=\(assetClass)"
+    }
+
+    /// A quote plus the asset class that answered. With an unknown class, each is tried.
+    static func fetchQuote(
+        symbol: String,
+        assetClass: String?
+    ) async -> (quote: StockQuote, assetClass: String)? {
+        for candidate in assetClass.map({ [$0] }) ?? nasdaqAssetClasses {
+            if let payload = await nasdaqPayload(nasdaqURL("info", symbol: symbol, assetClass: candidate)),
+               let quote = parseQuote(payload, symbol: symbol) {
+                return (quote, candidate)
+            }
+        }
+        return nil
+    }
+
+    static func parseQuote(_ payload: [String: Any], symbol: String) -> StockQuote? {
+        guard let primary = payload["primaryData"] as? [String: Any] else { return nil }
         let marketStatus = payload["marketStatus"] as? String ?? "Unknown"
         let secondary = payload["secondaryData"] as? [String: Any]
         let useExtendedQuote = marketStatus.caseInsensitiveCompare("Open") != .orderedSame
             && marketNumber(secondary?["lastSalePrice"]) != nil
-        let displayed = useExtendedQuote ? secondary! : primary
+        let displayed = useExtendedQuote ? (secondary ?? primary) : primary
         guard
             let price = marketNumber(displayed["lastSalePrice"]),
             let change = marketNumber(displayed["netChange"]),
             let changePercent = marketNumber(displayed["percentageChange"])
         else { return nil }
 
-        return AMDQuoteSnapshot(
+        return StockQuote(
+            symbol: symbol,
+            name: cleanCompanyName(payload["companyName"] as? String ?? symbol),
             price: price,
             change: change,
             changePercent: changePercent,
@@ -58,38 +79,68 @@ enum DataService {
         )
     }
 
-    static func fetchAMDSessionChart() async -> AMDSessionChart? {
-        guard
-            let payload = await nasdaqPayload("https://api.nasdaq.com/api/quote/AMD/chart?assetclass=stocks"),
-            let rows = payload["chart"] as? [[String: Any]]
-        else { return nil }
+    /// "Advanced Micro Devices, Inc. Common Stock" → "Advanced Micro Devices".
+    static func cleanCompanyName(_ name: String) -> String {
+        var cleaned = name
+        for pattern in [
+            #"\s+(Class [A-Z]\s+)?(Common Stock|Ordinary Shares|Common Shares)$"#,
+            #"\s+American Depositary Shares.*$"#,
+            #",?\s+(Inc|Corp|Corporation|Ltd|Limited|Co|plc|N\.V|S\.A)\.?$"#
+        ] {
+            cleaned = cleaned.replacingOccurrences(
+                of: pattern, with: "", options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? name : trimmed
+    }
 
-        let points = rows.compactMap { row -> AMDChartPoint? in
+    static func fetchChart(symbol: String, assetClass: String) async -> StockSessionChart? {
+        guard let payload = await nasdaqPayload(nasdaqURL("chart", symbol: symbol, assetClass: assetClass))
+        else { return nil }
+        return parseChart(payload)
+    }
+
+    static func parseChart(_ payload: [String: Any]) -> StockSessionChart? {
+        guard let rows = payload["chart"] as? [[String: Any]] else { return nil }
+        let points = rows.compactMap { row -> StockChartPoint? in
             guard let milliseconds = row["x"] as? Double,
                   let price = row["y"] as? Double else { return nil }
             let timestamp = Date(timeIntervalSince1970: milliseconds / 1_000)
             let displayTime = (row["z"] as? [String: Any])?["dateTime"] as? String
-            return AMDChartPoint(
+            return StockChartPoint(
                 timestamp: timestamp,
                 price: price,
                 session: displayTime.flatMap(tradingSession(timeLabel:))
                     ?? tradingSession(at: timestamp)
             )
         }
-        guard !points.isEmpty else { return nil }
-        let previousClose = marketNumber(payload["previousClose"])
-            ?? points.first!.price
-        return AMDSessionChart(
+        guard let first = points.first else { return nil }
+        return StockSessionChart(
             points: points,
-            previousClose: previousClose,
+            previousClose: marketNumber(payload["previousClose"]) ?? first.price,
             timeAsOf: payload["timeAsOf"] as? String ?? ""
         )
     }
 
-    static func fetchWeather() async -> WeatherSnapshot? {
-        // Austin city center. Open-Meteo requires no key and stores no personal location.
-        let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=30.2672&longitude=-97.7431&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FChicago&forecast_days=5")!
-        guard let (data, _) = try? await session.data(from: url),
+    static func fetchWeather(
+        at location: WeatherLocation,
+        unit: TemperatureUnit
+    ) async -> WeatherSnapshot? {
+        // Open-Meteo needs no key; only the chosen city's coordinates are sent.
+        var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        components.queryItems = [
+            URLQueryItem(name: "latitude", value: String(location.latitude)),
+            URLQueryItem(name: "longitude", value: String(location.longitude)),
+            URLQueryItem(name: "current", value: "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"),
+            URLQueryItem(name: "daily", value: "weather_code,temperature_2m_max,temperature_2m_min"),
+            URLQueryItem(name: "temperature_unit", value: unit == .fahrenheit ? "fahrenheit" : "celsius"),
+            URLQueryItem(name: "wind_speed_unit", value: unit == .fahrenheit ? "mph" : "kmh"),
+            URLQueryItem(name: "timezone", value: location.timeZone),
+            URLQueryItem(name: "forecast_days", value: "5")
+        ]
+        guard let url = components.url,
+              let (data, _) = try? await session.data(from: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let current = root["current"] as? [String: Any],
               let temperature = current["temperature_2m"] as? Double,
@@ -97,19 +148,68 @@ enum DataService {
               let humidity = current["relative_humidity_2m"] as? Int,
               let wind = current["wind_speed_10m"] as? Double,
               let code = current["weather_code"] as? Int else { return nil }
-        let forecast = parseDailyForecast(root["daily"] as? [String: Any])
+        let forecast = parseDailyForecast(
+            root["daily"] as? [String: Any],
+            timeZone: location.timeZone
+        )
         return WeatherSnapshot(
+            location: location.name,
+            timeZone: location.timeZone,
             temperature: Int(temperature.rounded()),
             feelsLike: Int(feels.rounded()),
             description: weatherDescription(code),
             humidity: humidity,
-            windMPH: Int(wind.rounded()),
+            wind: Int(wind.rounded()),
+            windUnit: unit.windLabel,
             code: code,
             forecast: forecast
         )
     }
 
-    private static func parseDailyForecast(_ daily: [String: Any]?) -> [DailyForecast] {
+    /// Cities matching a search, from Open-Meteo's free geocoding API.
+    static func searchLocations(_ query: String) async -> [WeatherLocation] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        var components = URLComponents(string: "https://geocoding-api.open-meteo.com/v1/search")!
+        components.queryItems = [
+            URLQueryItem(name: "name", value: query),
+            URLQueryItem(name: "count", value: "8"),
+            URLQueryItem(name: "language", value: "en")
+        ]
+        guard let url = components.url,
+              let (data, _) = try? await session.data(from: url)
+        else { return [] }
+        return parseLocations(data)
+    }
+
+    static func parseLocations(_ data: Data) -> [WeatherLocation] {
+        guard
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let results = root["results"] as? [[String: Any]]
+        else { return [] }
+        return results.compactMap { result in
+            guard
+                let name = result["name"] as? String,
+                let latitude = result["latitude"] as? Double,
+                let longitude = result["longitude"] as? Double,
+                let timeZone = result["timezone"] as? String
+            else { return nil }
+            let region = [result["admin1"] as? String, result["country"] as? String]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty && $0 != name }
+            return WeatherLocation(
+                name: ([name] + region).joined(separator: ", "),
+                latitude: latitude,
+                longitude: longitude,
+                timeZone: timeZone
+            )
+        }
+    }
+
+    private static func parseDailyForecast(
+        _ daily: [String: Any]?,
+        timeZone: String
+    ) -> [DailyForecast] {
         guard
             let daily,
             let dates = daily["time"] as? [String],
@@ -120,7 +220,7 @@ enum DataService {
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "America/Chicago")
+        formatter.timeZone = TimeZone(identifier: timeZone)
         formatter.dateFormat = "yyyy-MM-dd"
         let count = min(dates.count, highs.count, lows.count, codes.count)
         return (0..<count).compactMap { index in
@@ -242,7 +342,7 @@ enum DataService {
         return Double(cleaned)
     }
 
-    static func tradingSession(at date: Date) -> AMDTradingSession {
+    static func tradingSession(at date: Date) -> TradingSession {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
         let components = calendar.dateComponents([.hour, .minute], from: date)
@@ -261,7 +361,7 @@ enum DataService {
         return formatter
     }()
 
-    static func tradingSession(timeLabel: String) -> AMDTradingSession? {
+    static func tradingSession(timeLabel: String) -> TradingSession? {
         guard let time = chartTimeFormatter.date(from: timeLabel) else { return nil }
         return tradingSession(at: time)
     }

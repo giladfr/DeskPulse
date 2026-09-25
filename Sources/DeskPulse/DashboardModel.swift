@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import Foundation
 import IOKit.pwr_mgt
@@ -11,6 +12,8 @@ final class DashboardModel: ObservableObject {
     @Published var rotterItems: [FeedItem] = []
     @Published var cnnItems: [FeedItem] = []
     @Published var foxItems: [FeedItem] = []
+    /// Headlines from the sources chosen in Settings, newest first.
+    @Published var myNewsItems: [NewsItem] = []
     @Published var lastRefresh: Date?
     @Published var isRefreshing = false
     @Published var needsInitialArrange = false
@@ -40,8 +43,12 @@ final class DashboardModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var sleepAssertionID = IOPMAssertionID(0)
     private var knownRotterItemIDs: Set<String>?
+    private var refreshRequestedAgain = false
+    private var settingsObservation: AnyCancellable?
+    let settings: AppSettings
 
-    init() {
+    init(settings: AppSettings = AppSettings()) {
+        self.settings = settings
         let defaults = UserDefaults.standard
         incomingAlertDetectionEnabled = defaults.object(
             forKey: incomingAlertDetectionStorageKey
@@ -76,6 +83,21 @@ final class DashboardModel: ObservableObject {
         }
         inferActiveSavedLayoutIfNeeded()
         ensureWidgetLibrary()
+        observeSettings()
+    }
+
+    /// Re-fetches weather and news soon after their settings change, instead of
+    /// waiting for the next scheduled refresh.
+    private func observeSettings() {
+        settingsObservation = Publishers.Merge3(
+            settings.$weatherLocation.dropFirst().map { _ in () },
+            settings.$temperatureUnit.dropFirst().map { _ in () },
+            settings.$newsSources.dropFirst().map { _ in () }
+        )
+        .debounce(for: .milliseconds(500), scheduler: RunLoop.main)
+        .sink { [weak self] in
+            Task { @MainActor in await self?.refresh() }
+        }
     }
 
     /// One-time upgrades for layouts saved by earlier versions.
@@ -126,7 +148,11 @@ final class DashboardModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
+        guard !isRefreshing else {
+            // Something changed mid-refresh (e.g. a setting); run once more after.
+            refreshRequestedAgain = true
+            return
+        }
         isRefreshing = true
         // Only fetch what an open widget shows. Rotter also feeds the
         // incoming-alert rule, so it keeps refreshing while that rule is on.
@@ -135,12 +161,18 @@ final class DashboardModel: ObservableObject {
         let wantsRotter = isVisible(.rotter) || incomingAlertDetectionEnabled
         let wantsCNN = isVisible(.cnn)
         let wantsFox = isVisible(.fox)
-        async let newWeather = Self.fetchWeather(if: wantsWeather)
+        let newsSources = isVisible(.myNews) ? settings.newsSources.filter(\.isEnabled) : []
+        let location = settings.weatherLocation
+        let unit = settings.temperatureUnit
+        async let newWeather = Self.fetchWeather(at: location, unit: unit, if: wantsWeather)
+        async let newMyNews = Self.fetchNews(from: newsSources)
         async let newYnet = Self.fetchFeed(Self.ynetFeedURL, if: wantsYnet)
         async let newRotter = Self.fetchFeed(Self.rotterFeedURL, if: wantsRotter)
         async let newCNN = Self.fetchFeed(Self.cnnFeedURL, if: wantsCNN)
         async let newFox = Self.fetchFeed(Self.foxFeedURL, if: wantsFox)
         let results = await (newWeather, newYnet, newRotter, newCNN, newFox)
+        let myNews = await newMyNews
+        if !myNews.isEmpty || newsSources.isEmpty { myNewsItems = myNews }
         if let value = results.0 { weather = value }
         if !results.1.isEmpty { ynetItems = results.1 }
         if !results.2.isEmpty {
@@ -159,6 +191,10 @@ final class DashboardModel: ObservableObject {
         if !results.4.isEmpty { foxItems = results.4 }
         lastRefresh = Date()
         isRefreshing = false
+        if refreshRequestedAgain {
+            refreshRequestedAgain = false
+            await refresh()
+        }
     }
 
     nonisolated private static let ynetFeedURL = URL(string: "https://www.ynet.co.il/Integration/StoryRss2.xml")!
@@ -167,10 +203,48 @@ final class DashboardModel: ObservableObject {
         string: "https://news.google.com/rss/search?q=when%3A1d%20source%3ACNN%20world&hl=en-US&gl=US&ceid=US%3Aen"
     )!
     nonisolated private static let foxFeedURL = URL(string: "https://moxie.foxnews.com/google-publisher/latest.xml")!
-    private static let dataBackedKinds: Set<WidgetKind> = [.weather, .ynet, .rotter, .cnn, .fox]
+    private static let dataBackedKinds: Set<WidgetKind> = [.weather, .ynet, .rotter, .cnn, .fox, .myNews]
 
-    nonisolated private static func fetchWeather(if enabled: Bool) async -> WeatherSnapshot? {
-        enabled ? await DataService.fetchWeather() : nil
+    nonisolated private static func fetchWeather(
+        at location: WeatherLocation,
+        unit: TemperatureUnit,
+        if enabled: Bool
+    ) async -> WeatherSnapshot? {
+        enabled ? await DataService.fetchWeather(at: location, unit: unit) : nil
+    }
+
+    nonisolated private static func fetchNews(from sources: [NewsSource]) async -> [NewsItem] {
+        guard !sources.isEmpty else { return [] }
+        let batches = await withTaskGroup(of: (NewsSource, [FeedItem]).self) { group in
+            for source in sources {
+                group.addTask { (source, await DataService.fetchFeed(source.url)) }
+            }
+            var batches: [(NewsSource, [FeedItem])] = []
+            for await batch in group { batches.append(batch) }
+            return batches
+        }
+        return mergeNews(batches)
+    }
+
+    /// Interleaves several feeds newest first (undated items last), without
+    /// duplicates, keeping the most recent 80.
+    nonisolated static func mergeNews(_ batches: [(NewsSource, [FeedItem])]) -> [NewsItem] {
+        var seen = Set<String>()
+        let items = batches.flatMap { source, items in
+            items.map { NewsItem(item: $0, sourceID: source.id, sourceName: source.name) }
+        }
+        .filter { seen.insert($0.id).inserted }
+        return items
+            .sorted { lhs, rhs in
+                switch (lhs.item.date, rhs.item.date) {
+                case let (left?, right?): left > right
+                case (.some, nil): true
+                case (nil, .some): false
+                case (nil, nil): lhs.sourceName < rhs.sourceName
+                }
+            }
+            .prefix(80)
+            .map { $0 }
     }
 
     nonisolated private static func fetchFeed(_ url: URL, if enabled: Bool) async -> [FeedItem] {
@@ -589,7 +663,8 @@ final class DashboardModel: ObservableObject {
             (.liveTV13, 520, 300),
             (.liveTVCNN, 520, 300),
             (.cnn, 420, 400),
-            (.fox, 420, 400)
+            (.fox, 420, 400),
+            (.myNews, 460, 420)
         ]
         var changed = false
         for (kind, width, height) in additions

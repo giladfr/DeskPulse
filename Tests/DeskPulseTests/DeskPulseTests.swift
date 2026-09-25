@@ -65,7 +65,7 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertEqual(model.latestIncomingAlert?.title, fresh.title)
     }
 
-    func testAMDTradingSessionBoundariesUseEasternTime() throws {
+    func testTradingSessionBoundariesUseEasternTime() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
         func date(hour: Int, minute: Int) throws -> Date {
@@ -361,5 +361,174 @@ final class DeskPulseTests: XCTestCase {
         let channel13 = DashboardWidget(id: UUID(), kind: .liveTV13, x: 0, y: 0, width: 300, height: 200)
         let snapshot = DashboardLayoutSnapshot(widgets: [cnn, channel13], hiddenKinds: [.liveTV13])
         XCTAssertEqual(DashboardModel.normalizedWarSnapshot(snapshot), snapshot)
+    }
+
+    // MARK: Stocks
+
+    func testSymbolsAreNormalized() {
+        XCTAssertEqual(WatchedSymbol.normalized(" nasdaq:amd "), "AMD")
+        XCTAssertEqual(WatchedSymbol.normalized("brk.b"), "BRK.B")
+        XCTAssertNil(WatchedSymbol.normalized("   "))
+        XCTAssertNil(WatchedSymbol.normalized("!!!"))
+    }
+
+    func testCompanyNamesDropListingBoilerplate() {
+        XCTAssertEqual(DataService.cleanCompanyName("Advanced Micro Devices, Inc. Common Stock"), "Advanced Micro Devices")
+        XCTAssertEqual(DataService.cleanCompanyName("Alphabet Inc. Class A Common Stock"), "Alphabet")
+        XCTAssertEqual(
+            DataService.cleanCompanyName("Taiwan Semiconductor Manufacturing Company Ltd. American Depositary Shares"),
+            "Taiwan Semiconductor Manufacturing Company"
+        )
+        XCTAssertEqual(DataService.cleanCompanyName("iShares Semiconductor ETF"), "iShares Semiconductor ETF")
+    }
+
+    func testParsesRegularSessionQuote() throws {
+        let payload: [String: Any] = [
+            "companyName": "NVIDIA Corporation Common Stock",
+            "marketStatus": "Open",
+            "primaryData": [
+                "lastSalePrice": "$123.45",
+                "netChange": "-1.50",
+                "percentageChange": "-1.20%",
+                "bidPrice": "$123.40",
+                "askPrice": "$123.50",
+                "volume": "1,000,000",
+                "isRealTime": true,
+                "lastTradeTimestamp": "Sep 25, 2026 10:00 AM ET"
+            ]
+        ]
+        let quote = try XCTUnwrap(DataService.parseQuote(payload, symbol: "NVDA"))
+        XCTAssertEqual(quote.symbol, "NVDA")
+        XCTAssertEqual(quote.name, "NVIDIA")
+        XCTAssertEqual(quote.price, 123.45, accuracy: 1e-9)
+        XCTAssertEqual(quote.change, -1.5, accuracy: 1e-9)
+        XCTAssertEqual(quote.changePercent, -1.2, accuracy: 1e-9)
+        XCTAssertEqual(quote.bid ?? 0, 123.40, accuracy: 1e-9)
+        XCTAssertFalse(quote.isExtendedHours)
+        XCTAssertEqual(quote.marketStatus, "Open")
+    }
+
+    func testClosedMarketQuoteUsesExtendedHoursPrice() throws {
+        let payload: [String: Any] = [
+            "companyName": "Advanced Micro Devices, Inc. Common Stock",
+            "marketStatus": "Closed",
+            "primaryData": ["lastSalePrice": "$150.00", "netChange": "+2.00", "percentageChange": "+1.35%"],
+            "secondaryData": ["lastSalePrice": "$151.00", "netChange": "+1.00", "percentageChange": "+0.67%"]
+        ]
+        let quote = try XCTUnwrap(DataService.parseQuote(payload, symbol: "AMD"))
+        XCTAssertTrue(quote.isExtendedHours)
+        XCTAssertEqual(quote.price, 151, accuracy: 1e-9)
+    }
+
+    func testQuoteWithoutPriceIsRejected() {
+        XCTAssertNil(DataService.parseQuote(["primaryData": ["lastSalePrice": "N/A"]], symbol: "X"))
+        XCTAssertNil(DataService.parseQuote([:], symbol: "X"))
+    }
+
+    func testParsesIntradayChart() throws {
+        let payload: [String: Any] = [
+            "previousClose": "$100.00",
+            "timeAsOf": "Sep 25, 2026",
+            "chart": [
+                ["x": 1_790_000_000_000.0, "y": 99.5, "z": ["dateTime": "9:00 AM ET"]],
+                ["x": 1_790_002_000_000.0, "y": 101.25, "z": ["dateTime": "10:00 AM ET"]],
+                ["x": "bad", "y": 1.0]
+            ]
+        ]
+        let chart = try XCTUnwrap(DataService.parseChart(payload))
+        XCTAssertEqual(chart.previousClose, 100, accuracy: 1e-9)
+        XCTAssertEqual(chart.points.map(\.price), [99.5, 101.25])
+        XCTAssertEqual(chart.points.map(\.session), [.premarket, .regular])
+    }
+
+    // MARK: Weather locations
+
+    func testParsesGeocodingResults() {
+        let json = """
+        {"results": [
+          {"name": "Tel Aviv", "latitude": 32.08, "longitude": 34.78, "timezone": "Asia/Jerusalem",
+           "admin1": "Tel Aviv District", "country": "Israel"},
+          {"name": "Nowhere", "latitude": 1.0}
+        ]}
+        """
+        let locations = DataService.parseLocations(Data(json.utf8))
+        XCTAssertEqual(locations, [WeatherLocation(
+            name: "Tel Aviv, Tel Aviv District, Israel",
+            latitude: 32.08,
+            longitude: 34.78,
+            timeZone: "Asia/Jerusalem"
+        )])
+    }
+
+    // MARK: News
+
+    func testGoogleNewsTopicFeed() throws {
+        let source = try XCTUnwrap(NewsSource.googleNews(topic: " semiconductors "))
+        XCTAssertEqual(source.name, "semiconductors")
+        XCTAssertEqual(source.url.host(), "news.google.com")
+        let query = try XCTUnwrap(URLComponents(url: source.url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(query.first { $0.name == "q" }?.value, "semiconductors when:1d")
+        XCTAssertNil(NewsSource.googleNews(topic: "   "))
+    }
+
+    func testNewsIsMergedNewestFirstWithoutDuplicates() {
+        let bbc = NewsSource(name: "BBC", url: URL(string: "https://bbc.example/rss")!)
+        let hn = NewsSource(name: "HN", url: URL(string: "https://hn.example/rss")!)
+        func item(_ title: String, _ link: String, _ minutesAgo: Double?) -> FeedItem {
+            FeedItem(
+                title: title,
+                link: URL(string: link),
+                date: minutesAgo.map { Date(timeIntervalSinceNow: -$0 * 60) }
+            )
+        }
+        let merged = DashboardModel.mergeNews([
+            (bbc, [item("Old", "https://x/1", 60), item("Undated", "https://x/2", nil)]),
+            (hn, [item("New", "https://x/3", 5), item("Old again", "https://x/1", 60)])
+        ])
+        XCTAssertEqual(merged.map(\.item.title), ["New", "Old", "Undated"])
+        XCTAssertEqual(merged.first?.sourceName, "HN")
+    }
+
+    func testDetectsRightToLeftHeadlines() {
+        XCTAssertTrue("צבע אדום באשקלון".containsRightToLeftText)
+        XCTAssertTrue("خبر عاجل".containsRightToLeftText)
+        XCTAssertFalse("Markets rally".containsRightToLeftText)
+    }
+
+    // MARK: Settings
+
+    func testSettingsPersistAndEditWatchlist() throws {
+        let suite = "DeskPulseTests.settings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertEqual(settings.watchlist, WatchedSymbol.defaults)
+        XCTAssertEqual(settings.featuredSymbol, "AMD")
+        XCTAssertNotNil(settings.addSymbol("msft", assetClass: "stocks"))
+        XCTAssertNil(settings.addSymbol("MSFT"), "duplicates are ignored")
+        settings.featuredSymbol = "MSFT"
+        settings.removeSymbol("MSFT")
+        XCTAssertEqual(settings.featuredSymbol, "AMD", "removing the featured symbol features the first")
+        settings.setAssetClass("etf", for: "SOXX")
+        settings.weatherLocation = WeatherLocation(name: "Haifa", latitude: 32.8, longitude: 35.0, timeZone: "Asia/Jerusalem")
+        settings.temperatureUnit = .celsius
+
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertEqual(reloaded.watchlist.map(\.symbol), ["AMD", "NVDA", "AVGO", "TSM", "SOXX"])
+        XCTAssertEqual(reloaded.watchlist.last?.assetClass, "etf")
+        XCTAssertEqual(reloaded.weatherLocation.name, "Haifa")
+        XCTAssertEqual(reloaded.temperatureUnit, .celsius)
+        XCTAssertEqual(reloaded.clocks.map(\.name), WorldClock.defaults.map(\.name))
+    }
+
+    func testWatchlistKeepsAtLeastOneSymbol() throws {
+        let suite = "DeskPulseTests.settings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        for symbol in settings.watchlist.map(\.symbol) { settings.removeSymbol(symbol) }
+        XCTAssertEqual(settings.watchlist.count, 1)
+        XCTAssertEqual(settings.featuredSymbol, settings.watchlist.first?.symbol)
     }
 }

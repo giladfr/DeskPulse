@@ -45,6 +45,7 @@ struct DashboardView: View {
                 ForEach(model.visibleWidgets) { widget in
                     WidgetFrame(widget: widget, canvasSize: proxy.size)
                         .environmentObject(model)
+                        .environmentObject(model.settings)
                         .zIndex(1)
                 }
                 Color.clear
@@ -268,6 +269,11 @@ struct DashboardView: View {
                     ? "Snap to grid is on"
                     : "Snap to grid is off"
             )
+            SettingsLink {
+                Image(systemName: "gearshape.fill")
+            }
+            .buttonStyle(HeaderButtonStyle())
+            .help("Settings — weather city, stock watchlist, clocks and news sources (⌘,)")
         }
         .padding(.horizontal, 24)
         .frame(height: 68)

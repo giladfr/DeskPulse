@@ -48,15 +48,28 @@ the information I actually want in front of me.
 
 | Personal | Live information | Israel + world news | Audio + video |
 | --- | --- | --- | --- |
-| Gmail | AMD intraday | Ynet | Israeli radio |
-| WhatsApp | Austin weather + forecast | Rotter סקופים | YouTube Music |
-| World clocks | Today | CNN World | Channels 11, 12, 13 |
-|  | Israel Red Alert | Fox News | CNN Live |
+| Gmail | Stock watchlist + intraday chart | Ynet | Israeli radio |
+| WhatsApp | Weather + forecast (any city) | Rotter סקופים | YouTube Music |
+| World clocks (your cities) | Today | CNN World | Channels 11, 12, 13 |
+|  | Israel Red Alert | Fox News, My news | CNN Live |
 
-The AMD card shows the current session, previous-close baseline, premarket and
-regular-session boundary, and extended-hours data when available. The radio card
-supports station switching from the keyboard media controls and optional local
-song recognition with prominent album art.
+The stock card features one symbol with its intraday chart (previous-close
+baseline, premarket/regular boundary, extended hours, and a hover crosshair) and
+shows the rest of your watchlist as chips: click one to feature it, right-click
+for options, or **+** to add any Nasdaq-listed stock, ETF or index. **My news**
+merges the sources you choose, newest first, with a filter per source. The radio
+card supports station switching from the keyboard media controls and optional
+local song recognition with prominent album art.
+
+## Settings
+
+Open **Settings** (⌘, or the gear in the top bar) to choose:
+
+- **Weather**: search any city; Fahrenheit/mph or Celsius/km/h.
+- **Stocks**: the watchlist (add, remove, reorder) and the featured symbol.
+- **Clocks**: the world clocks' names, flags and time zones.
+- **News**: My news sources — popular feeds (world, Israel, markets, tech), a
+  Google News feed for any topic, or any RSS/Atom URL.
 
 ## Controls
 
