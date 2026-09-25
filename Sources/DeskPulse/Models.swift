@@ -105,11 +105,20 @@ enum DashboardLayoutSelection: Equatable {
     case war
 }
 
-/// A new Rotter headline that matched the incoming-alert rule.
+/// A Red Alert (Home Front Command) alert that passed the user's area filter.
 struct IncomingAlert: Identifiable, Equatable {
     let id = UUID()
     let title: String
+    let areas: [String]
     let receivedAt: Date
+    /// Sent from Settings to check the banner, sound and notification.
+    var isTest = false
+
+    /// "Tel Aviv, Ramat Gan +12 more"
+    var areaSummary: String {
+        let shown = areas.prefix(4).joined(separator: ", ")
+        return areas.count > 4 ? "\(shown) +\(areas.count - 4) more" : shown
+    }
 }
 
 /// A headline from one of the user's news sources.

@@ -4,6 +4,10 @@ import SwiftUI
 struct SettingsView: View {
     var body: some View {
         TabView {
+            GeneralSettings()
+                .tabItem { Label("General", systemImage: "gearshape.fill") }
+            AlertSettings()
+                .tabItem { Label("Alerts", systemImage: "bell.badge.fill") }
             WeatherSettings()
                 .tabItem { Label("Weather", systemImage: "cloud.sun.fill") }
             StockSettings()
@@ -12,8 +16,10 @@ struct SettingsView: View {
                 .tabItem { Label("Clocks", systemImage: "clock.fill") }
             NewsSettings()
                 .tabItem { Label("News", systemImage: "newspaper.fill") }
+            RadioSettings()
+                .tabItem { Label("Radio", systemImage: "radio.fill") }
         }
-        .frame(width: 560, height: 460)
+        .frame(width: 600, height: 500)
     }
 }
 
@@ -274,5 +280,219 @@ private struct NewsSettings: View {
         settings.addNewsSource(source)
         customName = ""
         customURL = ""
+    }
+}
+
+private struct GeneralSettings: View {
+    @EnvironmentObject private var settings: AppSettings
+
+    var body: some View {
+        Form {
+            Section("Refresh") {
+                Picker("Refresh news and weather every", selection: $settings.refreshMinutes) {
+                    ForEach([1, 2, 5, 10, 15], id: \.self) { minutes in
+                        Text(minutes == 1 ? "minute" : "\(minutes) minutes").tag(minutes)
+                    }
+                }
+                Text("Stocks update on their own schedule, every 10–60 seconds. Hidden cards are never fetched.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Top bar") {
+                ForEach(WidgetKind.allCases) { kind in
+                    Toggle(isOn: Binding(
+                        get: { !settings.hiddenFromTopBar.contains(kind) },
+                        set: { shown in
+                            if shown {
+                                settings.hiddenFromTopBar.remove(kind)
+                            } else {
+                                settings.hiddenFromTopBar.insert(kind)
+                            }
+                        }
+                    )) {
+                        Label(kind.title, systemImage: kind.symbol)
+                    }
+                }
+                Text("Turn off cards you never use to keep their buttons out of the top bar. A card that is open stays open.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct AlertSettings: View {
+    @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var dashboard: DashboardModel
+    @State private var newArea = ""
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Status") { RedAlertStatusView(monitor: dashboard.redAlert, enabled: dashboard.incomingAlertDetectionEnabled) }
+                Toggle("Detect incoming alerts", isOn: Binding(
+                    get: { dashboard.incomingAlertDetectionEnabled },
+                    set: { if $0 != dashboard.incomingAlertDetectionEnabled { dashboard.toggleIncomingAlertDetection() } }
+                ))
+                Toggle("Show a macOS notification", isOn: $settings.notifiesIncomingAlerts)
+                Button("Send a test alert") { dashboard.sendTestAlert() }
+                    .help("Shows the notification and the HDMI screen banner without switching layouts")
+            } header: {
+                Text("Red Alert (Home Front Command)")
+            } footer: {
+                Text("Alerts arrive live from the Red Alert service (tzevaadom.co.il). A real alert also switches the dashboard to the situation layout. Drills are ignored.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                ForEach(settings.alertAreas, id: \.self) { area in
+                    HStack {
+                        Text(area)
+                        Spacer()
+                        Button {
+                            settings.alertAreas.removeAll { $0 == area }
+                        } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    TextField("Area in Hebrew, e.g. תל אביב", text: $newArea)
+                        .onSubmit(addArea)
+                    Button("Add", action: addArea)
+                        .disabled(newArea.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } header: {
+                Text("Areas")
+            } footer: {
+                Text(settings.alertAreas.isEmpty
+                     ? "Alerts anywhere in Israel count. Add areas to only react to those (an alert matches if any of its areas contains one of these)."
+                     : "Only alerts for these areas count.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Price alerts") {
+                if settings.priceAlerts.isEmpty {
+                    Text("None yet. Right-click a symbol on the stock card and choose “Add price alert…”.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(settings.priceAlerts) { alert in
+                    HStack {
+                        Image(systemName: "bell.fill").foregroundStyle(.yellow)
+                        Text(alert.summary)
+                        Spacer()
+                        Button {
+                            settings.priceAlerts.removeAll { $0.id == alert.id }
+                        } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func addArea() {
+        let area = newArea.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !area.isEmpty, !settings.alertAreas.contains(area) else { return }
+        settings.alertAreas.append(area)
+        newArea = ""
+    }
+}
+
+private struct RedAlertStatusView: View {
+    @ObservedObject var monitor: RedAlertMonitor
+    let enabled: Bool
+
+    var body: some View {
+        switch monitor.status {
+        case .connected:
+            Label("Connected", systemImage: "circle.fill").foregroundStyle(.green)
+        case .connecting:
+            Label("Connecting…", systemImage: "circle.dotted").foregroundStyle(.orange)
+        case .disconnected(let reason):
+            Label("Reconnecting — \(reason)", systemImage: "exclamationmark.circle.fill")
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+        case .off:
+            Label(enabled ? "Starting…" : "Off", systemImage: "circle").foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct RadioSettings: View {
+    @EnvironmentObject private var settings: AppSettings
+    @State private var name = ""
+    @State private var address = ""
+
+    var body: some View {
+        Form {
+            Section("Stations") {
+                ForEach(RadioStation.all) { station in
+                    Toggle(isOn: Binding(
+                        get: { !settings.hiddenRadioStations.contains(station.id) },
+                        set: { shown in
+                            if shown {
+                                settings.hiddenRadioStations.remove(station.id)
+                            } else {
+                                settings.hiddenRadioStations.insert(station.id)
+                            }
+                        }
+                    )) {
+                        Text("\(station.frequency)  \(station.name)")
+                    }
+                }
+                ForEach(settings.customRadioStations) { station in
+                    HStack {
+                        Text("★  \(station.name)")
+                        Text(station.streamURL.host() ?? "").foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            settings.customRadioStations.removeAll { $0.id == station.id }
+                        } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            Section("Add a stream") {
+                HStack {
+                    TextField("Name", text: $name).frame(width: 130)
+                    TextField("Stream URL (MP3, AAC or HLS)", text: $address)
+                        .onSubmit(add)
+                    Button("Add", action: add).disabled(stream == nil)
+                }
+            }
+            Section {
+                Toggle("Recognize songs", isOn: $settings.recognizesSongs)
+            } footer: {
+                Text("Names the song when a station doesn't: sends 10 seconds of the playing station to Shazam every 90 seconds. Needs ffmpeg.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var stream: CustomRadioStation? {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty,
+              let url = URL(string: address.trimmingCharacters(in: .whitespaces)),
+              let scheme = url.scheme, ["http", "https"].contains(scheme.lowercased()),
+              url.host() != nil
+        else { return nil }
+        return CustomRadioStation(name: name, streamURL: url)
+    }
+
+    private func add() {
+        guard let stream else { return }
+        settings.customRadioStations.append(stream)
+        name = ""
+        address = ""
     }
 }

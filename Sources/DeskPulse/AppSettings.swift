@@ -111,6 +111,53 @@ struct NewsSource: Codable, Equatable, Hashable, Identifiable {
     ]
 }
 
+/// "Tell me when NVDA rises above 150" or "when AMD moves 3% today".
+struct PriceAlert: Codable, Equatable, Hashable, Identifiable {
+    enum Condition: Codable, Hashable {
+        case above(Double)
+        case below(Double)
+        /// Absolute change since the previous close, in percent.
+        case dailyMove(Double)
+    }
+
+    var id = UUID()
+    var symbol: String
+    var condition: Condition
+    /// For daily moves: the day ("yyyy-MM-dd", New York) it last fired, so it fires
+    /// at most once per trading day.
+    var lastFiredDay: String?
+
+    func isTriggered(by quote: StockQuote, today: String) -> Bool {
+        guard quote.symbol == symbol else { return false }
+        switch condition {
+        case .above(let price): return quote.price >= price
+        case .below(let price): return quote.price <= price
+        case .dailyMove(let percent): return abs(quote.changePercent) >= percent && lastFiredDay != today
+        }
+    }
+
+    /// Above/below alerts are done once they fire; daily moves repeat the next day.
+    var isOneShot: Bool {
+        if case .dailyMove = condition { return false }
+        return true
+    }
+
+    var summary: String {
+        switch condition {
+        case .above(let price): "\(symbol) rises above \(String(format: "%.2f", price))"
+        case .below(let price): "\(symbol) falls below \(String(format: "%.2f", price))"
+        case .dailyMove(let percent): "\(symbol) moves ±\(String(format: "%g", percent))% in a day"
+        }
+    }
+}
+
+/// A radio stream the user added in Settings.
+struct CustomRadioStation: Codable, Equatable, Hashable, Identifiable {
+    var id = UUID()
+    var name: String
+    var streamURL: URL
+}
+
 /// User preferences edited in the Settings window (⌘,). Each value is saved as JSON in
 /// UserDefaults as soon as it changes.
 @MainActor
@@ -122,6 +169,19 @@ final class AppSettings: ObservableObject {
     @Published var featuredSymbol: String { didSet { save(featuredSymbol, Key.featuredSymbol) } }
     @Published var clocks: [WorldClock] { didSet { save(clocks, Key.clocks) } }
     @Published var newsSources: [NewsSource] { didSet { save(newsSources, Key.newsSources) } }
+    /// Minutes between news and weather refreshes.
+    @Published var refreshMinutes: Int { didSet { save(refreshMinutes, Key.refreshMinutes) } }
+    /// Widgets whose buttons are left out of the dashboard's top bar.
+    @Published var hiddenFromTopBar: Set<WidgetKind> { didSet { save(hiddenFromTopBar, Key.hiddenFromTopBar) } }
+    @Published var notifiesIncomingAlerts: Bool { didSet { save(notifiesIncomingAlerts, Key.notifiesIncomingAlerts) } }
+    /// Only alerts for areas containing one of these are shown; empty means all areas.
+    @Published var alertAreas: [String] { didSet { save(alertAreas, Key.alertAreas) } }
+    @Published var priceAlerts: [PriceAlert] { didSet { save(priceAlerts, Key.priceAlerts) } }
+    /// Built-in radio stations (by ID) that are hidden from the radio card.
+    @Published var hiddenRadioStations: Set<String> { didSet { save(hiddenRadioStations, Key.hiddenRadioStations) } }
+    @Published var customRadioStations: [CustomRadioStation] { didSet { save(customRadioStations, Key.customRadioStations) } }
+    /// Sends 10 s of the playing station to Shazam every 90 s to name the song.
+    @Published var recognizesSongs: Bool { didSet { save(recognizesSongs, Key.recognizesSongs) } }
 
     private let defaults: UserDefaults
 
@@ -132,6 +192,14 @@ final class AppSettings: ObservableObject {
         static let featuredSymbol = "settings.featured-symbol.v1"
         static let clocks = "settings.clocks.v1"
         static let newsSources = "settings.news-sources.v1"
+        static let refreshMinutes = "settings.refresh-minutes.v1"
+        static let hiddenFromTopBar = "settings.hidden-from-top-bar.v1"
+        static let notifiesIncomingAlerts = "settings.notify-incoming-alerts.v1"
+        static let alertAreas = "settings.alert-areas.v1"
+        static let priceAlerts = "settings.price-alerts.v1"
+        static let hiddenRadioStations = "settings.hidden-radio-stations.v1"
+        static let customRadioStations = "settings.custom-radio-stations.v1"
+        static let recognizesSongs = "settings.recognize-songs.v1"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -148,6 +216,30 @@ final class AppSettings: ObservableObject {
         featuredSymbol = load(Key.featuredSymbol, watchlist.first?.symbol ?? "AMD")
         clocks = load(Key.clocks, WorldClock.defaults)
         newsSources = load(Key.newsSources, NewsSource.defaults)
+        refreshMinutes = load(Key.refreshMinutes, 2)
+        hiddenFromTopBar = load(Key.hiddenFromTopBar, [])
+        notifiesIncomingAlerts = load(Key.notifiesIncomingAlerts, true)
+        alertAreas = load(Key.alertAreas, [])
+        priceAlerts = load(Key.priceAlerts, [])
+        hiddenRadioStations = load(Key.hiddenRadioStations, [])
+        customRadioStations = load(Key.customRadioStations, [])
+        recognizesSongs = load(Key.recognizesSongs, true)
+    }
+
+    /// Returns the price alerts this quote sets off, removing one-shot alerts and
+    /// marking daily-move alerts as fired for today.
+    func firePriceAlerts(for quote: StockQuote, today: String) -> [PriceAlert] {
+        let fired = priceAlerts.filter { $0.isTriggered(by: quote, today: today) }
+        guard !fired.isEmpty else { return [] }
+        let firedIDs = Set(fired.map(\.id))
+        priceAlerts = priceAlerts.compactMap { alert in
+            guard firedIDs.contains(alert.id) else { return alert }
+            if alert.isOneShot { return nil }
+            var repeating = alert
+            repeating.lastFiredDay = today
+            return repeating
+        }
+        return fired
     }
 
     /// Adds a symbol (normalized) unless it is already watched; returns it if added.

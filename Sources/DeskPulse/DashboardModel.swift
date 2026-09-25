@@ -42,7 +42,8 @@ final class DashboardModel: ObservableObject {
     private let compactRowSizeStorageKey = "dashboard.compact-row-size.v3"
     private var refreshTask: Task<Void, Never>?
     private var sleepAssertionID = IOPMAssertionID(0)
-    private var knownRotterItemIDs: Set<String>?
+    /// Real-time Red Alert connection, open while incoming-alert detection is on.
+    let redAlert = RedAlertMonitor()
     private var refreshRequestedAgain = false
     private var settingsObservation: AnyCancellable?
     let settings: AppSettings
@@ -84,6 +85,7 @@ final class DashboardModel: ObservableObject {
         inferActiveSavedLayoutIfNeeded()
         ensureWidgetLibrary()
         observeSettings()
+        redAlert.onAlert = { [weak self] alert in self?.handle(alert) }
     }
 
     /// Re-fetches weather and news soon after their settings change, instead of
@@ -138,12 +140,17 @@ final class DashboardModel: ObservableObject {
 
     func start() {
         guard refreshTask == nil else { return }
-        refreshTask = Task {
-            await refresh()
+        refreshTask = Task { [weak self] in
+            await self?.refresh()
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(120))
-                await refresh()
+                let minutes = self?.settings.refreshMinutes ?? 2
+                try? await Task.sleep(for: .seconds(max(1, minutes) * 60))
+                await self?.refresh()
             }
+        }
+        if incomingAlertDetectionEnabled { redAlert.start() }
+        if !settings.priceAlerts.isEmpty || (incomingAlertDetectionEnabled && settings.notifiesIncomingAlerts) {
+            Notifier.setUp()
         }
     }
 
@@ -154,11 +161,10 @@ final class DashboardModel: ObservableObject {
             return
         }
         isRefreshing = true
-        // Only fetch what an open widget shows. Rotter also feeds the
-        // incoming-alert rule, so it keeps refreshing while that rule is on.
+        // Only fetch what an open widget shows.
         let wantsWeather = isVisible(.weather)
         let wantsYnet = isVisible(.ynet)
-        let wantsRotter = isVisible(.rotter) || incomingAlertDetectionEnabled
+        let wantsRotter = isVisible(.rotter)
         let wantsCNN = isVisible(.cnn)
         let wantsFox = isVisible(.fox)
         let newsSources = isVisible(.myNews) ? settings.newsSources.filter(\.isEnabled) : []
@@ -175,10 +181,7 @@ final class DashboardModel: ObservableObject {
         if !myNews.isEmpty || newsSources.isEmpty { myNewsItems = myNews }
         if let value = results.0 { weather = value }
         if !results.1.isEmpty { ynetItems = results.1 }
-        if !results.2.isEmpty {
-            processIncomingAlertRule(results.2)
-            rotterItems = results.2
-        }
+        if !results.2.isEmpty { rotterItems = results.2 }
         if !results.3.isEmpty {
             cnnItems = results.3.map {
                 FeedItem(
@@ -311,9 +314,22 @@ final class DashboardModel: ObservableObject {
             incomingAlertDetectionEnabled,
             forKey: incomingAlertDetectionStorageKey
         )
-        // Rotter is only fetched while visible or while this rule is on, so its
-        // items may be stale; let the next fetch set a fresh baseline instead.
-        knownRotterItemIDs = nil
+        if incomingAlertDetectionEnabled {
+            redAlert.start()
+        } else {
+            redAlert.stop()
+        }
+    }
+
+    /// Checks the whole alert path (banner, sound, notification) without a real alert.
+    /// The situation layout is left alone.
+    func sendTestAlert() {
+        deliver(IncomingAlert(
+            title: "Test alert · צבע אדום",
+            areas: ["תל אביב - יפו", "רמת גן"],
+            receivedAt: Date(),
+            isTest: true
+        ))
     }
 
     func update(_ widget: DashboardWidget) {
@@ -735,31 +751,26 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    func processIncomingAlertRule(_ items: [FeedItem]) {
-        let currentIDs = Set(items.map(\.id))
-        defer { knownRotterItemIDs = currentIDs }
-        guard
-            incomingAlertDetectionEnabled,
-            let knownRotterItemIDs
-        else { return }
-
-        let newItems = items.filter { !knownRotterItemIDs.contains($0.id) }
-        guard let alert = newItems.first(where: {
-            Self.containsIncomingRocketAlert($0.title)
-        }) else { return }
-        // Recorded even when the situation layout is already up, so other screens
-        // (such as the HDMI screen in its own Space) still hear about new alerts.
-        latestIncomingAlert = IncomingAlert(title: alert.title, receivedAt: Date())
+    /// A real alert from Red Alert: shown everywhere and switches to the situation
+    /// layout, if it concerns one of the areas chosen in Settings.
+    func handle(_ alert: RedAlert) {
+        guard incomingAlertDetectionEnabled, alert.matches(areas: settings.alertAreas) else { return }
+        deliver(IncomingAlert(title: alert.title, areas: alert.cities, receivedAt: Date()))
         if activeLayout != .war {
             warActivationRequest &+= 1
         }
     }
 
-    static func containsIncomingRocketAlert(_ title: String) -> Bool {
-        title.range(
-            of: #"צבע\s+אדום"#,
-            options: .regularExpression
-        ) != nil
+    /// Recorded even when the situation layout is already up, so other screens (such
+    /// as the HDMI screen in its own Space) still hear about new alerts.
+    private func deliver(_ alert: IncomingAlert) {
+        latestIncomingAlert = alert
+        guard settings.notifiesIncomingAlerts else { return }
+        Notifier.post(
+            id: "incoming-alert-\(alert.id.uuidString)",
+            title: alert.title,
+            body: alert.areaSummary
+        )
     }
 
     static let defaultWidgets: [DashboardWidget] = [

@@ -35,34 +35,115 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertEqual(first.id, refreshed.id)
     }
 
-    func testIncomingRocketDetectionMatchesRotterAlertPhrase() {
-        XCTAssertTrue(DashboardModel.containsIncomingRocketAlert(
-            "דיווח ראשוני: צבע אדום באזור המרכז"
-        ))
-        XCTAssertTrue(DashboardModel.containsIncomingRocketAlert(
-            "התרעה: צבע   אדום בעוטף"
-        ))
-        XCTAssertFalse(DashboardModel.containsIncomingRocketAlert(
-            "עדכון חדשות רגיל ללא התרעה"
-        ))
+    // MARK: Red Alert
+
+    func testParsesRedAlertMessages() throws {
+        let message = """
+        {"type":"ALERT","data":{"notificationId":"abc-1","time":1790000000,"threat":0,
+         "isDrill":false,"cities":["תל אביב - יפו","רמת גן - מערב"]}}
+        """
+        let alert = try XCTUnwrap(RedAlert.parse(Data(message.utf8)))
+        XCTAssertEqual(alert.id, "abc-1")
+        XCTAssertEqual(alert.cities.count, 2)
+        XCTAssertTrue(alert.title.contains("צבע אדום"))
+
+        let drill = message.replacingOccurrences(of: "\"isDrill\":false", with: "\"isDrill\":true")
+        XCTAssertNil(RedAlert.parse(Data(drill.utf8)), "drills are ignored")
+        XCTAssertNil(RedAlert.parse(Data(#"{"type":"SYSTEM_MESSAGE","data":{}}"#.utf8)))
+        XCTAssertNil(RedAlert.parse(Data("not json".utf8)))
     }
 
-    func testIncomingAlertRuleRecordsOnlyNewMatchingHeadlines() {
-        let model = DashboardModel()
-        if !model.incomingAlertDetectionEnabled { model.toggleIncomingAlertDetection() }
-        let old = FeedItem(title: "צבע אדום בעוטף", link: URL(string: "https://example.com/1"), date: nil)
-        let routine = FeedItem(title: "עדכון שגרתי", link: URL(string: "https://example.com/2"), date: nil)
+    func testRedAlertAreaFilter() {
+        let alert = RedAlert(id: "1", threat: 0, cities: ["תל אביב - יפו", "חולון"], isDrill: false)
+        XCTAssertTrue(alert.matches(areas: []), "no filter means every area")
+        XCTAssertTrue(alert.matches(areas: ["תל אביב"]))
+        XCTAssertFalse(alert.matches(areas: ["חיפה", "  "]))
+    }
 
-        // The first fetch only sets a baseline, even if it contains an alert.
-        model.processIncomingAlertRule([old])
-        XCTAssertNil(model.latestIncomingAlert)
+    func testRealAlertIsDeliveredAndTestAlertLeavesLayoutAlone() throws {
+        let suite = "DeskPulseTests.alerts.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = DashboardModel(settings: AppSettings(defaults: defaults))
+        try XCTSkipUnless(model.incomingAlertDetectionEnabled, "detection is off in this environment")
 
-        model.processIncomingAlertRule([routine, old])
-        XCTAssertNil(model.latestIncomingAlert)
+        let before = model.warActivationRequest
+        model.sendTestAlert()
+        XCTAssertEqual(model.latestIncomingAlert?.isTest, true)
+        XCTAssertEqual(model.warActivationRequest, before)
 
-        let fresh = FeedItem(title: "דיווח: צבע אדום באשקלון", link: URL(string: "https://example.com/3"), date: nil)
-        model.processIncomingAlertRule([fresh, routine, old])
-        XCTAssertEqual(model.latestIncomingAlert?.title, fresh.title)
+        model.settings.alertAreas = ["חיפה"]
+        model.handle(RedAlert(id: "2", threat: 0, cities: ["אשקלון"], isDrill: false))
+        XCTAssertEqual(model.latestIncomingAlert?.isTest, true, "other areas are ignored")
+
+        model.handle(RedAlert(id: "3", threat: 0, cities: ["חיפה - מערב"], isDrill: false))
+        XCTAssertEqual(model.latestIncomingAlert?.areas, ["חיפה - מערב"])
+        XCTAssertEqual(model.latestIncomingAlert?.isTest, false)
+    }
+
+    func testAlertAreaSummaryIsShort() {
+        let alert = IncomingAlert(title: "t", areas: ["a", "b", "c", "d", "e", "f"], receivedAt: Date())
+        XCTAssertEqual(alert.areaSummary, "a, b, c, d +2 more")
+    }
+
+    // MARK: Price alerts
+
+    private func quote(_ symbol: String, price: Double, percent: Double) -> StockQuote {
+        StockQuote(
+            symbol: symbol, name: symbol, price: price, change: 0, changePercent: percent,
+            bid: nil, ask: nil, volume: "", marketStatus: "Open", tradeTime: "",
+            isRealTime: true, isExtendedHours: false
+        )
+    }
+
+    func testPriceAlertConditions() {
+        let above = PriceAlert(symbol: "NVDA", condition: .above(150))
+        XCTAssertFalse(above.isTriggered(by: quote("NVDA", price: 149.99, percent: 0), today: "d"))
+        XCTAssertTrue(above.isTriggered(by: quote("NVDA", price: 150, percent: 0), today: "d"))
+        XCTAssertFalse(above.isTriggered(by: quote("AMD", price: 200, percent: 0), today: "d"))
+
+        let below = PriceAlert(symbol: "AMD", condition: .below(100))
+        XCTAssertTrue(below.isTriggered(by: quote("AMD", price: 99, percent: 0), today: "d"))
+
+        var move = PriceAlert(symbol: "AMD", condition: .dailyMove(3))
+        XCTAssertTrue(move.isTriggered(by: quote("AMD", price: 1, percent: -3.2), today: "d"))
+        XCTAssertFalse(move.isTriggered(by: quote("AMD", price: 1, percent: 2.9), today: "d"))
+        move.lastFiredDay = "d"
+        XCTAssertFalse(move.isTriggered(by: quote("AMD", price: 1, percent: 5), today: "d"))
+    }
+
+    func testFiringPriceAlertsRemovesOneShotsAndMarksDailyMoves() throws {
+        let suite = "DeskPulseTests.price.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        settings.priceAlerts = [
+            PriceAlert(symbol: "AMD", condition: .above(100)),
+            PriceAlert(symbol: "AMD", condition: .dailyMove(2)),
+            PriceAlert(symbol: "AMD", condition: .below(50))
+        ]
+        let fired = settings.firePriceAlerts(for: quote("AMD", price: 110, percent: 4), today: "2026-09-25")
+        XCTAssertEqual(fired.count, 2)
+        XCTAssertEqual(settings.priceAlerts.count, 2, "the above-100 alert is done")
+        XCTAssertEqual(settings.priceAlerts.first?.lastFiredDay, "2026-09-25")
+        XCTAssertTrue(settings.firePriceAlerts(for: quote("AMD", price: 110, percent: 4), today: "2026-09-25").isEmpty,
+                      "daily moves fire once a day")
+        XCTAssertEqual(AppSettings(defaults: defaults).priceAlerts.count, 2, "saved")
+    }
+
+    // MARK: Radio stations
+
+    func testRadioStationListFollowsSettings() {
+        let custom = CustomRadioStation(name: "KUTX", streamURL: URL(string: "https://example.com/kutx")!)
+        let stations = RadioStation.stations(hiding: ["galatz", "eco99"], adding: [custom])
+        XCTAssertFalse(stations.contains { $0.id == "galatz" })
+        XCTAssertEqual(stations.last?.name, "KUTX")
+        XCTAssertEqual(stations.count, RadioStation.all.count - 2 + 1)
+        XCTAssertEqual(
+            RadioStation.stations(hiding: Set(RadioStation.all.map(\.id)), adding: []).count,
+            RadioStation.all.count,
+            "hiding everything falls back to the built-in list"
+        )
     }
 
     func testTradingSessionBoundariesUseEasternTime() throws {

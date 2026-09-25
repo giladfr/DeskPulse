@@ -50,6 +50,7 @@ struct DeskPulseApp: App {
         Settings {
             SettingsView()
                 .environmentObject(settings)
+                .environmentObject(model)
         }
     }
 }
