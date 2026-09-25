@@ -2,7 +2,14 @@ import SwiftUI
 
 @main
 struct DeskPulseApp: App {
-    @StateObject private var model = DashboardModel()
+    @StateObject private var settings: AppSettings
+    @StateObject private var model: DashboardModel
+
+    init() {
+        let settings = AppSettings()
+        _settings = StateObject(wrappedValue: settings)
+        _model = StateObject(wrappedValue: DashboardModel(settings: settings))
+    }
 
     var body: some Scene {
         // A single dashboard window, so "show the dashboard" from the HDMI screen
@@ -10,6 +17,7 @@ struct DeskPulseApp: App {
         Window("DeskPulse", id: DashboardWindow.id) {
             DashboardView()
                 .environmentObject(model)
+                .environmentObject(settings)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 1100, minHeight: 700)
                 .onAppear {
@@ -31,11 +39,17 @@ struct DeskPulseApp: App {
         Window("HDMI Input", id: HDMIWindow.id) {
             HDMIWindowView()
                 .environmentObject(model)
+                .environmentObject(settings)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 640, minHeight: 360)
         }
         .windowStyle(.hiddenTitleBar)
         // Opened from the dashboard's toolbar only, not from the Window menu.
         .commandsRemoved()
+
+        Settings {
+            SettingsView()
+                .environmentObject(settings)
+        }
     }
 }

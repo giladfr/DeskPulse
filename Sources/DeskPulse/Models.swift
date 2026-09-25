@@ -7,16 +7,17 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
     case whatsapp, youtubeMusic
     case liveTV11, liveTV, liveTV13, liveTVCNN
     case radio
+    case myNews
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .gmail: "Gmail"
-        case .stocks: "AMD live"
+        case .stocks: "Stocks"
         case .clocks: "World clocks"
         case .date: "Today"
-        case .weather: "Austin weather"
+        case .weather: "Weather"
         case .ynet: "Ynet"
         case .rotter: "Rotter סקופים"
         case .cnn: "CNN · World"
@@ -29,6 +30,7 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .liveTV13: "Live TV · Channel 13"
         case .liveTVCNN: "CNN Live"
         case .radio: "Israeli radio"
+        case .myNews: "My news"
         }
     }
 
@@ -51,6 +53,7 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .liveTV13: "13.square.fill"
         case .liveTVCNN: "globe.americas.fill"
         case .radio: "radio.fill"
+        case .myNews: "newspaper.circle.fill"
         }
     }
 
@@ -73,6 +76,7 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .liveTV13: Color(red: 0.45, green: 0.42, blue: 1)
         case .liveTVCNN: Color(red: 0.90, green: 0.12, blue: 0.15)
         case .radio: Color(red: 0.55, green: 0.42, blue: 1)
+        case .myNews: .teal
         }
     }
 }
@@ -108,6 +112,15 @@ struct IncomingAlert: Identifiable, Equatable {
     let receivedAt: Date
 }
 
+/// A headline from one of the user's news sources.
+struct NewsItem: Identifiable, Equatable {
+    let item: FeedItem
+    let sourceID: UUID
+    let sourceName: String
+
+    var id: String { item.id }
+}
+
 struct FeedItem: Identifiable, Equatable {
     var id: String { link?.absoluteString ?? title }
     let title: String
@@ -115,7 +128,10 @@ struct FeedItem: Identifiable, Equatable {
     let date: Date?
 }
 
-struct AMDQuoteSnapshot: Equatable {
+struct StockQuote: Equatable {
+    let symbol: String
+    /// Short company or fund name, e.g. "Advanced Micro Devices".
+    let name: String
     let price: Double
     let change: Double
     let changePercent: Double
@@ -128,31 +144,34 @@ struct AMDQuoteSnapshot: Equatable {
     let isExtendedHours: Bool
 }
 
-enum AMDTradingSession: Equatable {
+enum TradingSession: Equatable {
     case premarket
     case regular
     case afterHours
 }
 
-struct AMDChartPoint: Identifiable, Equatable {
+struct StockChartPoint: Identifiable, Equatable {
     var id: TimeInterval { timestamp.timeIntervalSince1970 }
     let timestamp: Date
     let price: Double
-    let session: AMDTradingSession
+    let session: TradingSession
 }
 
-struct AMDSessionChart: Equatable {
-    let points: [AMDChartPoint]
+struct StockSessionChart: Equatable {
+    let points: [StockChartPoint]
     let previousClose: Double
     let timeAsOf: String
 }
 
 struct WeatherSnapshot: Equatable {
+    let location: String
+    let timeZone: String
     let temperature: Int
     let feelsLike: Int
     let description: String
     let humidity: Int
-    let windMPH: Int
+    let wind: Int
+    let windUnit: String
     let code: Int
     let forecast: [DailyForecast]
 }
