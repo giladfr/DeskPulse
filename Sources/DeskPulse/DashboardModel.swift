@@ -333,7 +333,7 @@ final class DashboardModel: ObservableObject {
                DashboardLayoutSnapshot.self,
                from: data
            ) {
-            let snapshot = normalizedWarSnapshot(storedSnapshot)
+            let snapshot = Self.normalizedWarSnapshot(storedSnapshot)
             widgets = snapshot.widgets
             hiddenKinds = snapshot.hiddenKinds
             if snapshot != storedSnapshot,
@@ -626,7 +626,8 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    private func normalizedWarSnapshot(
+    /// Upgrades a situation layout saved before CNN Live replaced Channel 13 there.
+    static func normalizedWarSnapshot(
         _ snapshot: DashboardLayoutSnapshot
     ) -> DashboardLayoutSnapshot {
         var migratedWidgets = snapshot.widgets
