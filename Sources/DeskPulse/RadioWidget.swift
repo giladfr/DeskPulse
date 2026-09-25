@@ -43,6 +43,21 @@ struct RadioStation: Identifiable, Equatable {
             color: .red
         )
     ]
+
+    /// The stations shown on the card: built-ins that aren't hidden, then the user's own.
+    static func stations(hiding hidden: Set<String>, adding custom: [CustomRadioStation]) -> [RadioStation] {
+        let stations = all.filter { !hidden.contains($0.id) } + custom.map {
+            RadioStation(
+                id: "custom-\($0.id.uuidString)",
+                frequency: "★",
+                name: $0.name,
+                subtitle: String($0.name.uppercased().prefix(12)),
+                streamURL: $0.streamURL,
+                color: .teal
+            )
+        }
+        return stations.isEmpty ? all : stations
+    }
 }
 
 private final class RadioMetadataReceiver: NSObject, AVPlayerItemMetadataOutputPushDelegate,
@@ -310,12 +325,13 @@ final class RadioPlayerModel: ObservableObject {
     private var acceptsMediaCommands = false
     private var mediaCommandTargets: [MediaCommandRegistration] = []
     private let selectionKey = "dashboard.radio.station.v1"
+    /// Set from Settings by the card; custom stations are only known then.
+    private(set) var stations = RadioStation.all
+    private var recognizesSongs = true
 
     init() {
-        let saved = UserDefaults.standard.string(forKey: selectionKey)
-        selectedID = RadioStation.all.contains(where: { $0.id == saved })
-            ? saved!
-            : RadioStation.all[0].id
+        // A custom station may be saved; keep its ID until the station list arrives.
+        selectedID = UserDefaults.standard.string(forKey: selectionKey) ?? RadioStation.all[0].id
         player.volume = Float(volume)
         metadataReceiver.onMetadata = { [weak self] items in
             Task { @MainActor [weak self] in
@@ -326,7 +342,18 @@ final class RadioPlayerModel: ObservableObject {
     }
 
     var selectedStation: RadioStation {
-        RadioStation.all.first(where: { $0.id == selectedID }) ?? RadioStation.all[0]
+        stations.first(where: { $0.id == selectedID }) ?? stations[0]
+    }
+
+    func update(stations: [RadioStation], recognizesSongs: Bool) {
+        self.stations = stations.isEmpty ? RadioStation.all : stations
+        self.recognizesSongs = recognizesSongs
+        if !recognizesSongs {
+            stopRecognition()
+        } else if isPlaying, recognitionTask == nil {
+            startRecognition()
+        }
+        objectWillChange.send()
     }
 
     func select(_ station: RadioStation) {
@@ -357,12 +384,12 @@ final class RadioPlayerModel: ObservableObject {
     }
 
     func cycleStation(by offset: Int) {
-        guard isPlaying, let current = RadioStation.all.firstIndex(of: selectedStation) else {
+        guard isPlaying, let current = stations.firstIndex(of: selectedStation) else {
             return
         }
-        let count = RadioStation.all.count
+        let count = stations.count
         let next = (current + offset % count + count) % count
-        select(RadioStation.all[next])
+        select(stations[next])
     }
 
     private func prepareToPlay(_ station: RadioStation) {
@@ -431,6 +458,8 @@ final class RadioPlayerModel: ObservableObject {
 
     private func startRecognition() {
         recognitionTask?.cancel()
+        recognitionTask = nil
+        guard recognizesSongs else { return }
         let streamURL = selectedStation.streamURL
         recognitionTask = Task { [weak self] in
             // Give playback priority while its connection settles.
@@ -556,12 +585,17 @@ final class RadioPlayerModel: ObservableObject {
 
 struct RadioWidget: View {
     @StateObject private var model = RadioPlayerModel()
+    @EnvironmentObject private var settings: AppSettings
+
+    private var stations: [RadioStation] {
+        RadioStation.stations(hiding: settings.hiddenRadioStations, adding: settings.customRadioStations)
+    }
 
     var body: some View {
         VStack(spacing: 14) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
-                    ForEach(RadioStation.all) { station in
+                    ForEach(model.stations) { station in
                         stationButton(station)
                     }
                 }
@@ -664,7 +698,14 @@ struct RadioWidget: View {
         }
         .padding(.vertical, 12)
         .onAppear {
+            model.update(stations: stations, recognizesSongs: settings.recognizesSongs)
             model.setMediaCommandsActive(NSApplication.shared.isActive)
+        }
+        .onChange(of: stations) { _, stations in
+            model.update(stations: stations, recognizesSongs: settings.recognizesSongs)
+        }
+        .onChange(of: settings.recognizesSongs) { _, recognizes in
+            model.update(stations: stations, recognizesSongs: recognizes)
         }
         .onReceive(
             NotificationCenter.default.publisher(

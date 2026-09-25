@@ -101,7 +101,13 @@ struct IncomingAlertBanner: View {
                     .opacity(0.85)
                 Text(alert.title)
                     .font(.system(size: 16, weight: .semibold))
-                    .lineLimit(2)
+                    .lineLimit(1)
+                if !alert.areas.isEmpty {
+                    Text(alert.areaSummary)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(2)
+                        .opacity(0.9)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Button(action: onShowSituation) {

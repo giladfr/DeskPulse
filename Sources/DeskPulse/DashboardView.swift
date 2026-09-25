@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DashboardView: View {
     @EnvironmentObject private var model: DashboardModel
+    @EnvironmentObject private var settings: AppSettings
     @State private var canvasSize: CGSize = .zero
     @State private var savedSlotFeedback: Int?
     @State private var warSavedFeedback = false
@@ -20,6 +21,10 @@ struct DashboardView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: toggleHDMIScreenNotification)) { _ in
                 toggleHDMIScreen()
+            }
+            // Clicking an alert or price notification shows the dashboard.
+            .onReceive(NotificationCenter.default.publisher(for: notificationClickedNotification)) { _ in
+                openWindow(id: DashboardWindow.id)
             }
             .onChange(of: model.warActivationRequest) { _, request in
                 guard request > 0, model.activeLayout != .war else { return }
@@ -161,8 +166,8 @@ struct DashboardView: View {
                 ))
                 .help(
                     model.incomingAlertDetectionEnabled
-                        ? "Incoming alert detection is on — new Rotter “צבע אדום” alerts activate the situation layout"
-                        : "Incoming alert detection is off"
+                        ? "Red Alert detection is on — Home Front Command alerts notify you and activate the situation layout (areas in Settings → Alerts)"
+                        : "Red Alert detection is off"
                 )
 
                 Button {
@@ -176,7 +181,7 @@ struct DashboardView: View {
             }
             Spacer()
             HStack(spacing: 5) {
-                ForEach(WidgetKind.allCases) { kind in
+                ForEach(WidgetKind.allCases.filter { !settings.hiddenFromTopBar.contains($0) }) { kind in
                     Button {
                         model.toggleVisibility(kind)
                     } label: {

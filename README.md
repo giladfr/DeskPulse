@@ -29,10 +29,14 @@ the information I actually want in front of me.
 - **A live situation layout.** The red shield brings up clocks, date, WhatsApp,
   Israel Red Alert, Israeli radio, live TV, and every news stream. It can be saved
   like the other layouts.
-- **Incoming-alert automation.** An optional antenna rule watches newly arriving
-  Rotter headlines for `צבע אדום` and switches to the situation layout. If the
-  HDMI screen is open, a red banner with the headline and a sound appear there
-  too, with a one-click (or Return) jump to the dashboard.
+- **Incoming-alert automation.** With the antenna on, DeskPulse keeps a live
+  connection to the Red Alert service (tzevaadom.co.il). A Home Front Command
+  alert — optionally only for the areas you choose — shows a macOS notification,
+  switches the dashboard to the situation layout, and, if the HDMI screen is
+  open, drops a red banner there with a one-click (or Return) jump back. Drills
+  are ignored. This is a convenience, not a replacement for official alerts.
+- **Price alerts.** Right-click a stock chip to be notified when it rises above
+  or falls below a price, or moves a set percentage in a day.
 - **Real resource control.** Toggling a widget off destroys its view, web session,
   player, and timers instead of merely hiding pixels.
 - **Built for a permanent display.** Full screen, dark, dense, fluid, and quick to
@@ -65,11 +69,17 @@ local song recognition with prominent album art.
 
 Open **Settings** (⌘, or the gear in the top bar) to choose:
 
+- **General**: how often news and weather refresh, and which cards have a button
+  in the top bar.
+- **Alerts**: Red Alert detection, notifications, areas, a test alert, and your
+  price alerts.
 - **Weather**: search any city; Fahrenheit/mph or Celsius/km/h.
 - **Stocks**: the watchlist (add, remove, reorder) and the featured symbol.
 - **Clocks**: the world clocks' names, flags and time zones.
 - **News**: My news sources — popular feeds (world, Israel, markets, tech), a
   Google News feed for any topic, or any RSS/Atom URL.
+- **Radio**: which stations appear, your own stream URLs, and whether songs are
+  recognized with Shazam.
 
 ## Controls
 
@@ -77,7 +87,8 @@ Open **Settings** (⌘, or the gear in the top bar) to choose:
 - Drag a widget by its compact title bar; resize from its edges and corners.
 - Use **1–4** to restore layouts, or press and hold a number to save over it.
 - Use the **red shield** for the situation layout; press and hold it to save edits.
-- Toggle the **antenna** for automatic incoming-alert detection.
+- Toggle the **antenna** for live Red Alert detection (Settings → Alerts shows
+  the connection status and can send a test alert).
 - Toggle the **grid** to show snap points. Auto arrange aligns the current layout
   without throwing away its overall structure.
 - The **lock** button locks the Mac. The sleep button toggles display sleep

@@ -11,6 +11,8 @@ final class StockMarketModel: ObservableObject {
 
     /// Called when Nasdaq reveals which asset class a symbol belongs to.
     var onAssetClass: (String, String) -> Void = { _, _ in }
+    /// Called with every fresh quote, e.g. to check price alerts.
+    var onQuote: (StockQuote) -> Void = { _ in }
 
     private var watchlist: [WatchedSymbol] = []
     private var featured = ""
@@ -90,6 +92,7 @@ final class StockMarketModel: ObservableObject {
     private func store(_ quote: StockQuote, assetClass: String, for entry: WatchedSymbol) {
         quotes[entry.symbol] = quote
         unavailable.remove(entry.symbol)
+        onQuote(quote)
         if entry.assetClass != assetClass {
             onAssetClass(entry.symbol, assetClass)
         }
@@ -129,6 +132,18 @@ struct StocksWidget: View {
             let settings = settings
             market.onAssetClass = { symbol, assetClass in
                 settings.setAssetClass(assetClass, for: symbol)
+            }
+            market.onQuote = { quote in
+                for alert in settings.firePriceAlerts(for: quote, today: PriceAlertClock.today()) {
+                    Notifier.post(
+                        id: "price-alert-\(alert.id.uuidString)-\(PriceAlertClock.today())",
+                        title: alert.summary,
+                        body: String(
+                            format: "%@ is at %.2f (%+.2f%% today)",
+                            quote.symbol, quote.price, quote.changePercent
+                        )
+                    )
+                }
             }
             market.configure(watchlist: settings.watchlist, featured: featured)
         }
@@ -255,6 +270,7 @@ private struct WatchlistStrip: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var dashboard: DashboardModel
     @State private var showsAddSymbol = false
+    @State private var alertSymbol: String?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -279,6 +295,17 @@ private struct WatchlistStrip: View {
             }
         }
         .frame(height: 32)
+        .popover(isPresented: Binding(
+            get: { alertSymbol != nil },
+            set: { if !$0 { alertSymbol = nil } }
+        ), arrowEdge: .bottom) {
+            if let symbol = alertSymbol {
+                PriceAlertForm(symbol: symbol, currentPrice: market.quotes[symbol]?.price) {
+                    alertSymbol = nil
+                }
+                .environmentObject(settings)
+            }
+        }
     }
 
     private func chip(_ entry: WatchedSymbol) -> some View {
@@ -292,6 +319,11 @@ private struct WatchlistStrip: View {
                 HStack(spacing: 4) {
                     Text(entry.symbol)
                         .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    if settings.priceAlerts.contains(where: { $0.symbol == entry.symbol }) {
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(.yellow)
+                    }
                     if let quote {
                         Text(String(format: "%+.2f%%", quote.changePercent))
                             .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -319,6 +351,7 @@ private struct WatchlistStrip: View {
         .help(quote.map { "\($0.name) · \($0.marketStatus)" } ?? entry.symbol)
         .contextMenu {
             Button("Feature \(entry.symbol)") { settings.featuredSymbol = entry.symbol }
+            Button("Add price alert…") { alertSymbol = entry.symbol }
             Button("Open on Nasdaq") {
                 let path = entry.assetClass ?? "stocks"
                 if let url = URL(string: "https://www.nasdaq.com/market-activity/\(path)/\(entry.symbol.lowercased())") {
@@ -331,6 +364,84 @@ private struct WatchlistStrip: View {
             }
             .disabled(settings.watchlist.count <= 1)
         }
+    }
+}
+
+enum PriceAlertClock {
+    /// The New York trading day, so daily-move alerts reset with the market.
+    @MainActor
+    static func today() -> String {
+        CachedDateFormatter.string(from: Date(), format: "yyyy-MM-dd", timeZone: "America/New_York")
+    }
+}
+
+/// Creates a price alert for one symbol, prefilled around the current price.
+struct PriceAlertForm: View {
+    enum Kind: String, CaseIterable, Identifiable {
+        case above = "Rises above"
+        case below = "Falls below"
+        case move = "Moves ± % in a day"
+        var id: String { rawValue }
+    }
+
+    @EnvironmentObject private var settings: AppSettings
+    let symbol: String
+    let currentPrice: Double?
+    var onDone: () -> Void = {}
+    @State private var kind = Kind.above
+    @State private var value: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Alert for \(symbol)").font(.headline)
+            if let currentPrice {
+                Text("Now \(currentPrice, format: .number.precision(.fractionLength(2)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Picker("When it", selection: $kind) {
+                ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
+            }
+            TextField(kind == .move ? "Percent, e.g. 3" : "Price", value: $value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 160)
+                .onSubmit(add)
+            HStack {
+                Spacer()
+                Button("Cancel", action: onDone)
+                Button("Add alert", action: add)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled((value ?? 0) <= 0)
+            }
+            Text("You'll get a macOS notification while the stock card is on the dashboard.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 280)
+        .onAppear { suggestValue() }
+        .onChange(of: kind) { _, _ in suggestValue() }
+    }
+
+    private func suggestValue() {
+        switch kind {
+        case .above: value = currentPrice.map { ($0 * 1.02 * 100).rounded() / 100 }
+        case .below: value = currentPrice.map { ($0 * 0.98 * 100).rounded() / 100 }
+        case .move: value = 3
+        }
+    }
+
+    private func add() {
+        guard let value, value > 0 else { return }
+        let condition: PriceAlert.Condition = switch kind {
+        case .above: .above(value)
+        case .below: .below(value)
+        case .move: .dailyMove(value)
+        }
+        settings.priceAlerts.append(PriceAlert(symbol: symbol, condition: condition))
+        Notifier.setUp()
+        onDone()
     }
 }
 
