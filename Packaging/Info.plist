@@ -32,5 +32,7 @@
     <false/>
     <key>NSCameraUsageDescription</key>
     <string>DeskPulse uses camera access to display video from your USB HDMI capture card.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>DeskPulse uses microphone access to play the sound from your USB HDMI capture card. It never uses the Mac's own microphone.</string>
 </dict>
 </plist>

@@ -10,12 +10,15 @@ enum HDMIWindow {
     static let id = "hdmi"
     /// SwiftUI can restore windows at launch; the HDMI screen should only open on request.
     static var wasRequested = false
+    /// The HDMI screen's window while it is open.
+    static weak var window: NSWindow?
 }
 
 /// The HDMI input in its own full-screen window (and so its own Space), running
 /// alongside the dashboard. Closing the window releases the capture card.
 struct HDMIWindowView: View {
     @StateObject private var capture = HDMICaptureModel()
+    @StateObject private var audio = HDMIAudio()
     @EnvironmentObject private var dashboard: DashboardModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -37,9 +40,21 @@ struct HDMIWindowView: View {
         if HDMIWindow.wasRequested {
             HDMICaptureView(
                 model: capture,
+                audio: audio,
                 onShowDashboard: { openWindow(id: DashboardWindow.id) },
                 onClose: { dismissWindow(id: HDMIWindow.id) }
             )
+            // Sound follows the picture: it starts with the card's matching audio
+            // input once video is live and stops when the card goes away.
+            .onChange(of: capture.state) { _, state in
+                switch state {
+                case .live(let deviceName, _): audio.start(matching: deviceName)
+                case .unavailable, .idle: audio.stop()
+                case .connecting, .requestingPermission: break
+                }
+            }
+            .onDisappear { audio.stop() }
+            .background(FullScreenWindow { HDMIWindow.window = $0 })
             .overlay(alignment: .top) {
                 if let alert = visibleAlert {
                     IncomingAlertBanner(
@@ -60,7 +75,6 @@ struct HDMIWindowView: View {
                 guard visibleAlert != nil else { return }
                 NSSound(named: NSSound.Name("Sosumi"))?.play()
             }
-            .background(FullScreenWindow())
         } else {
             Color.black
                 .onAppear { dismissWindow(id: HDMIWindow.id) }
@@ -121,19 +135,31 @@ struct IncomingAlertBanner: View {
 /// Puts the hosting window into native full screen once it appears, giving it its
 /// own Space that can be reached by swiping.
 struct FullScreenWindow: NSViewRepresentable {
+    /// Called with the hosting window once it is known.
+    var onWindow: (NSWindow) -> Void = { _ in }
+
     func makeNSView(context: Context) -> NSView {
-        WindowObserverView()
+        WindowObserverView(onWindow: onWindow)
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     final class WindowObserverView: NSView {
+        private let onWindow: (NSWindow) -> Void
         private var didRequestFullScreen = false
+
+        init(onWindow: @escaping (NSWindow) -> Void) {
+            self.onWindow = onWindow
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window, !didRequestFullScreen else { return }
             didRequestFullScreen = true
+            onWindow(window)
             window.collectionBehavior.insert(.fullScreenPrimary)
             // Let the window finish appearing before it animates into its own Space.
             Task { @MainActor [weak window] in
