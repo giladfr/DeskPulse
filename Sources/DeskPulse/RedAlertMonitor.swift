@@ -62,12 +62,15 @@ final class RedAlertMonitor: ObservableObject {
 
     private static let socketURL = URL(string: "wss://ws.tzevaadom.co.il/socket?platform=WEB")!
     private static let logger = Logger(subsystem: "com.giladfride.DeskPulse", category: "RedAlert")
-    private let session = URLSession(configuration: .default)
+    private let events = RedAlertSocketEvents()
+    private lazy var session = URLSession(configuration: .default, delegate: events, delegateQueue: nil)
     private var connection: Task<Void, Never>?
+    private var socket: URLSessionWebSocketTask?
     private var recentIDs: [String] = []
 
     func start() {
         guard connection == nil else { return }
+        events.monitor = self
         connection = Task { [weak self] in await self?.maintainConnection() }
     }
 
@@ -84,11 +87,12 @@ final class RedAlertMonitor: ObservableObject {
             var request = URLRequest(url: Self.socketURL)
             request.setValue("https://www.tzevaadom.co.il", forHTTPHeaderField: "Origin")
             let socket = session.webSocketTask(with: request)
+            self.socket = socket
             socket.resume()
             let keepAlive = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(25))
-                    Self.ping(socket)
+                    sendKeepAlivePing(socket)
                 }
             }
             do {
@@ -113,11 +117,11 @@ final class RedAlertMonitor: ObservableObject {
         }
     }
 
-    /// URLSession calls the pong handler on its own queue. The closure must be created
-    /// outside the main actor: one formed in main-actor code is checked to run on the
-    /// main thread, and that check crashed the app on the first ping.
-    nonisolated private static func ping(_ socket: URLSessionWebSocketTask) {
-        socket.sendPing { _ in }
+    /// The service sends nothing until there is an alert, so the connection counts as
+    /// up once the WebSocket handshake completes rather than on the first message.
+    fileprivate func socketDidOpen(_ opened: URLSessionWebSocketTask) {
+        guard opened === socket, status == .connecting else { return }
+        status = .connected
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message) {
@@ -133,5 +137,31 @@ final class RedAlertMonitor: ObservableObject {
         if recentIDs.count > 50 { recentIDs.removeFirst() }
         Self.logger.info("Red Alert: \(alert.cities.count) areas, threat \(alert.threat)")
         onAlert(alert)
+    }
+}
+
+/// Sends a WebSocket ping. URLSession calls the pong handler on its own queue, so the
+/// handler must not be main-actor isolated or the runtime isolation check traps. Even an
+/// explicitly `@Sendable` closure here was compiled as `@MainActor` by the Swift 6.0
+/// whole-module (release) build, though not in debug builds, so the handler is a
+/// reference to a plain nonisolated function rather than a closure.
+func sendKeepAlivePing(_ socket: URLSessionWebSocketTask) {
+    socket.sendPing(pongReceiveHandler: ignorePong)
+}
+
+@Sendable nonisolated private func ignorePong(_ error: (any Error)?) {}
+
+/// Reports the WebSocket handshake to the monitor. A delegate method rather than a
+/// closure for the same reason as `ignorePong`: URLSession calls it on its own queue.
+private final class RedAlertSocketEvents: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    weak var monitor: RedAlertMonitor?
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        let monitor = monitor
+        Task { @MainActor in monitor?.socketDidOpen(webSocketTask) }
     }
 }
