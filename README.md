@@ -35,8 +35,9 @@ the information I actually want in front of me.
   switches the dashboard to the situation layout, and, if the HDMI screen is
   open, drops a red banner there with a one-click (or Return) jump back. Drills
   are ignored. This is a convenience, not a replacement for official alerts.
-- **Price alerts.** Right-click a stock chip to be notified when it rises above
-  or falls below a price, or moves a set percentage in a day.
+- **Price alerts.** Right-click a stock tile to be notified when it rises above
+  or falls below a price, or moves a set percentage in a day, even while the
+  stock card is hidden. Alert prices are drawn on the chart.
 - **Real resource control.** Toggling a widget off destroys its view, web session,
   player, and timers instead of merely hiding pixels.
 - **Built for a permanent display.** Full screen, dark, dense, fluid, and quick to
@@ -52,15 +53,22 @@ the information I actually want in front of me.
 
 | Personal | Live information | Israel + world news | Audio + video |
 | --- | --- | --- | --- |
-| Gmail | Stock watchlist + intraday chart | Ynet | Israeli radio |
+| Gmail | Markets: watchlist, charts, portfolio | Ynet | Israeli radio |
 | WhatsApp | Weather + forecast (any city) | Rotter סקופים | YouTube Music |
 | World clocks (your cities) | Today | CNN World | Channels 11, 12, 13 |
 |  | Israel Red Alert | Fox News, My news | CNN Live |
 
-The stock card features one symbol with its intraday chart (previous-close
-baseline, premarket/regular boundary, extended hours, and a hover crosshair) and
-shows the rest of your watchlist as chips: click one to feature it, right-click
-for options, or **+** to add any Nasdaq-listed stock, ETF or index. **My news**
+The stock card shows your watchlist as tiles, each with the price, the day's
+change, a sparkline and any pre-market or after-hours move (a compact ticker on a
+very short card). Above them, a market strip shows the S&P 500, Nasdaq, TA-125,
+USD/ILS, bitcoin, oil and gold, next to countdowns to the NYSE and Tel Aviv opens
+and closes. Click any tile or strip item for its chart: 1D (with pre-market and
+after-hours), 5D, 1M, 6M or 1Y, with a hover crosshair, price-alert lines, the
+day and 52-week ranges and volume. Search by name or symbol to add US and Tel
+Aviv stocks and ETFs, indexes, currencies, crypto and futures. Add your shares
+and average cost to see a portfolio line with the day's and total gain in dollars
+and shekels. Prices come from Yahoo Finance's public chart API, with Nasdaq as
+the fallback for US symbols; both are unofficial. **My news**
 merges the sources you choose, newest first, with a filter per source. The radio
 card supports station switching from the keyboard media controls and optional
 local song recognition with prominent album art.
@@ -74,7 +82,8 @@ Open **Settings** (⌘, or the gear in the top bar) to choose:
 - **Alerts**: Red Alert detection, notifications, areas, a test alert, and your
   price alerts.
 - **Weather**: search any city; Fahrenheit/mph or Celsius/km/h.
-- **Stocks**: the watchlist (add, remove, reorder) and the featured symbol.
+- **Stocks**: the watchlist (add, remove, reorder) with optional shares and
+  average cost, and the market strip's symbols.
 - **Clocks**: the world clocks' names, flags and time zones.
 - **News**: My news sources — popular feeds (world, Israel, markets, tech), a
   Google News feed for any topic, or any RSS/Atom URL.

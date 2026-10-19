@@ -95,17 +95,14 @@ private struct StockSettings: View {
                 List {
                     ForEach(settings.watchlist) { entry in
                         HStack {
-                            Image(systemName: entry.symbol == settings.featuredSymbol ? "star.fill" : "star")
-                                .foregroundStyle(entry.symbol == settings.featuredSymbol ? .yellow : .secondary)
-                                .onTapGesture { settings.featuredSymbol = entry.symbol }
-                                .help("Show this symbol large, with its chart")
                             Text(entry.symbol).font(.body.monospaced().weight(.semibold))
-                            if let assetClass = entry.assetClass, assetClass != "stocks" {
-                                Text(assetClass.uppercased())
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.secondary)
-                            }
                             Spacer()
+                            TextField("Shares", value: positionBinding(entry.symbol, \.shares), format: .number)
+                                .frame(width: 80)
+                                .help("Shares held, for the portfolio line")
+                            TextField("Avg cost", value: positionBinding(entry.symbol, \.averageCost), format: .number)
+                                .frame(width: 80)
+                                .help("Average price paid per share, in the symbol's currency")
                             Button {
                                 settings.removeSymbol(entry.symbol)
                             } label: {
@@ -122,15 +119,62 @@ private struct StockSettings: View {
             } header: {
                 Text("Watchlist")
             } footer: {
-                Text("Drag to reorder. The starred symbol is shown large with its intraday chart; click a chip on the card to switch.")
+                Text("Drag to reorder. Shares and average cost are optional; with them the card shows your portfolio's day and total gain, in dollars and shekels. Click a tile on the card for its chart.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section("Add a symbol") {
-                AddSymbolForm()
+                AddSymbolForm(title: "") { symbol, assetClass in
+                    settings.addSymbol(symbol, assetClass: assetClass)
+                }
+            }
+            Section {
+                Toggle("Show the market strip", isOn: $settings.showsMarketStrip)
+                List {
+                    ForEach(settings.marketStrip) { entry in
+                        HStack {
+                            Text(entry.symbol).font(.body.monospaced().weight(.semibold))
+                            Text(PriceText.shortName(entry.symbol)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                settings.marketStrip.removeAll { $0.symbol == entry.symbol }
+                            } label: {
+                                Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove from the market strip")
+                        }
+                    }
+                    .onMove { settings.marketStrip.move(fromOffsets: $0, toOffset: $1) }
+                }
+                .frame(minHeight: 150)
+                AddSymbolForm(title: "Add to the market strip") { symbol, _ in
+                    settings.addStripSymbol(symbol)
+                }
+                Button("Restore the default strip") {
+                    settings.marketStrip = WatchedSymbol.marketStripDefaults
+                }
+            } header: {
+                Text("Market strip")
+            } footer: {
+                Text("Indexes, currencies and commodities above the watchlist, next to NYSE and Tel Aviv opening hours. Click one on the card for its chart.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Edits one field of a holding; clearing the shares removes the position.
+    private func positionBinding(_ symbol: String, _ field: WritableKeyPath<WatchedSymbol, Double?>) -> Binding<Double?> {
+        Binding(
+            get: { settings.watchlist.first { $0.symbol == symbol }?[keyPath: field] },
+            set: { value in
+                guard var entry = settings.watchlist.first(where: { $0.symbol == symbol }) else { return }
+                entry[keyPath: field] = value
+                settings.setPosition(symbol, shares: entry.shares, averageCost: entry.averageCost)
+            }
+        )
     }
 }
 
