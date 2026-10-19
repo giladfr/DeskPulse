@@ -113,11 +113,12 @@ final class DeskPulseTests: XCTestCase {
 
     // MARK: Price alerts
 
-    private func quote(_ symbol: String, price: Double, percent: Double) -> StockQuote {
-        StockQuote(
-            symbol: symbol, name: symbol, price: price, change: 0, changePercent: percent,
-            bid: nil, ask: nil, volume: "", marketStatus: "Open", tradeTime: "",
-            isRealTime: true, isExtendedHours: false
+    /// A quote whose regular session moved `percent` from a previous close of 100,
+    /// with `price` as the latest trade.
+    private func quote(_ symbol: String, price: Double, percent: Double) -> MarketQuote {
+        MarketQuote(
+            symbol: symbol, price: price, sessionPrice: 100 + percent, previousClose: 100,
+            sparkline: [], sessionStart: nil, sessionEnd: nil
         )
     }
 
@@ -154,6 +155,186 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertTrue(settings.firePriceAlerts(for: quote("AMD", price: 110, percent: 4), today: "2026-09-25").isEmpty,
                       "daily moves fire once a day")
         XCTAssertEqual(AppSettings(defaults: defaults).priceAlerts.count, 2, "saved")
+    }
+
+    // MARK: Market data (Yahoo)
+
+    func testSparkQuotesSeparateTheSessionFromExtendedHours() throws {
+        let json = """
+        {
+          "AMD": {"symbol": "AMD", "start": 1000, "end": 2000, "previousClose": 562.23,
+                  "chartPreviousClose": 562.23, "fulldayPrice": 547.65,
+                  "timestamp": [1000, 1300, 1600], "close": [560.0, null, 528.75]},
+          "TEVA.TA": {"symbol": "TEVA.TA", "start": 1000, "end": 5000, "chartPreviousClose": 12820,
+                      "fulldayPrice": 12890, "timestamp": [1000, 1300], "close": [12850, 12880]},
+          "NOPE": {"symbol": "NOPE", "close": null}
+        }
+        """
+        let quotes = YahooFinance.parseSpark(Data(json.utf8), now: Date(timeIntervalSince1970: 3000))
+
+        // After New York's close: the session is the 4 p.m. close, the rest is after hours.
+        let amd = try XCTUnwrap(quotes["AMD"])
+        XCTAssertEqual(amd.sessionPrice, 528.75)
+        XCTAssertEqual(amd.price, 547.65)
+        XCTAssertEqual(amd.sparkline, [560, 528.75], "gaps are skipped")
+        XCTAssertEqual(amd.dayChangePercent, (528.75 - 562.23) / 562.23 * 100, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(amd.extendedChange), 18.9, accuracy: 1e-9)
+        XCTAssertFalse(amd.isTrading(at: Date(timeIntervalSince1970: 3000)))
+
+        // Still trading: the latest trade is the session price, with no extended move.
+        let teva = try XCTUnwrap(quotes["TEVA.TA"])
+        XCTAssertEqual(teva.sessionPrice, 12890)
+        XCTAssertNil(teva.extendedChange)
+        XCTAssertTrue(teva.isTrading(at: Date(timeIntervalSince1970: 3000)))
+        // Agorot to shekels.
+        XCTAssertEqual(teva.scaled(by: 0.01).price, 128.9, accuracy: 1e-9)
+        XCTAssertEqual(teva.scaled(by: 0.01).dayChangePercent, teva.dayChangePercent, accuracy: 1e-9)
+
+        XCTAssertNil(quotes["NOPE"])
+    }
+
+    private func chartJSON(
+        currency: String = "USD",
+        regularMarketTime: Double,
+        closes: String = "[100, 101, 102, 103]",
+        timestamps: String = "[900, 1100, 1500, 2100]"
+    ) -> Data {
+        Data("""
+        {"chart": {"result": [{
+          "meta": {"symbol": "X", "currency": "\(currency)", "fullExchangeName": "NasdaqGS",
+                   "instrumentType": "EQUITY", "longName": "Example Corp, Inc.",
+                   "regularMarketPrice": 99, "regularMarketTime": \(regularMarketTime),
+                   "previousClose": 90, "chartPreviousClose": 90,
+                   "regularMarketDayHigh": 104, "regularMarketDayLow": 98,
+                   "fiftyTwoWeekHigh": 150, "fiftyTwoWeekLow": 50, "regularMarketVolume": 1200000,
+                   "currentTradingPeriod": {"pre": {"start": 800, "end": 1000},
+                                            "regular": {"start": 1000, "end": 2000},
+                                            "post": {"start": 2000, "end": 3000}}},
+          "timestamp": \(timestamps),
+          "indicators": {"quote": [{"close": \(closes)}]}
+        }]}}
+        """.utf8)
+    }
+
+    func testDayChartSessionsAndDetails() throws {
+        let (chart, details) = try XCTUnwrap(YahooFinance.parseChart(chartJSON(regularMarketTime: 1900), range: .day))
+        XCTAssertEqual(chart.points.map(\.session), [.premarket, .regular, .regular, .afterHours])
+        XCTAssertEqual(chart.baseline, 90, "during the day, the previous close")
+        XCTAssertEqual(details.name, "Example Corp")
+        XCTAssertEqual(details.currency, "USD")
+        XCTAssertEqual(details.dayHigh, 104)
+        XCTAssertEqual(details.yearLow, 50)
+        XCTAssertEqual(details.regularStart, Date(timeIntervalSince1970: 1000))
+    }
+
+    /// Before the session, Yahoo's previous close is two sessions old; the last
+    /// session's close is the right baseline for the pre-market chart.
+    func testPreMarketChartComparesWithTheLastClose() throws {
+        let (chart, _) = try XCTUnwrap(YahooFinance.parseChart(
+            chartJSON(regularMarketTime: 500, closes: "[100, 101]", timestamps: "[850, 900]"),
+            range: .day
+        ))
+        XCTAssertEqual(chart.baseline, 99)
+        XCTAssertEqual(chart.points.map(\.session), [.premarket, .premarket])
+    }
+
+    func testTelAvivChartsAreConvertedFromAgorot() throws {
+        let (chart, details) = try XCTUnwrap(YahooFinance.parseChart(
+            chartJSON(currency: "ILA", regularMarketTime: 1900), range: .sixMonths
+        ))
+        XCTAssertEqual(details.currency, "ILS")
+        XCTAssertEqual(details.priceScale, 0.01)
+        XCTAssertEqual(details.currencySymbol, "₪")
+        XCTAssertEqual(chart.points.map(\.price), [1, 1.01, 1.02, 1.03])
+        XCTAssertEqual(chart.baseline, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(details.yearHigh), 1.5, accuracy: 1e-9)
+        XCTAssertTrue(chart.points.allSatisfy { $0.session == .regular }, "sessions only matter for one day")
+    }
+
+    func testSearchKeepsTradableSymbolsOnly() {
+        let json = """
+        {"quotes": [
+          {"symbol": "TEVA", "longname": "Teva Pharmaceutical Industries", "exchDisp": "NYSE", "quoteType": "EQUITY"},
+          {"symbol": "TEVA.TA", "shortname": "TEVA PHARMA IND", "exchDisp": "Tel Aviv", "quoteType": "EQUITY"},
+          {"symbol": "TEVA261106C00041000", "shortname": "TEVA call", "quoteType": "OPTION"}
+        ]}
+        """
+        let results = YahooFinance.parseSearch(Data(json.utf8))
+        XCTAssertEqual(results.map(\.symbol), ["TEVA", "TEVA.TA"])
+        XCTAssertEqual(results.last?.exchange, "Tel Aviv")
+    }
+
+    func testNasdaqFallbackOnlyForPlainUSTickers() {
+        XCTAssertTrue(MarketData.isNasdaqSymbol("AMD"))
+        XCTAssertFalse(MarketData.isNasdaqSymbol("TEVA.TA"))
+        XCTAssertFalse(MarketData.isNasdaqSymbol("^GSPC"))
+        XCTAssertFalse(MarketData.isNasdaqSymbol("ILS=X"))
+    }
+
+    func testMarketClockCountsDownToOpenAndClose() {
+        let start = Date(timeIntervalSince1970: 10_000)
+        let end = start.addingTimeInterval(6.5 * 3600)
+        let before = MarketClock.status(now: start.addingTimeInterval(-(2 * 3600 + 5 * 60)), start: start, end: end)
+        XCTAssertEqual(before.text, "opens in 2h 05m")
+        XCTAssertFalse(before.isOpen)
+        let during = MarketClock.status(now: end.addingTimeInterval(-45 * 60), start: start, end: end)
+        XCTAssertEqual(during.text, "closes in 45m")
+        XCTAssertTrue(during.isOpen)
+        XCTAssertEqual(MarketClock.status(now: end, start: start, end: end).text, "closed")
+        XCTAssertEqual(MarketClock.duration(30), "<1m")
+        XCTAssertEqual(MarketClock.duration(50 * 3600), "2d 2h")
+    }
+
+    func testPortfolioCombinesDollarsAndShekels() throws {
+        var amd = WatchedSymbol(symbol: "AMD")
+        amd.shares = 10
+        amd.averageCost = 100
+        var teva = WatchedSymbol(symbol: "TEVA.TA")
+        teva.shares = 100
+        teva.averageCost = 100
+        let amdQuote = MarketQuote(symbol: "AMD", price: 110, sessionPrice: 110, previousClose: 105,
+                                   sparkline: [], sessionStart: nil, sessionEnd: nil)
+        // ₪120 a share, up ₪2 today, at ₪4 to the dollar.
+        let tevaQuote = MarketQuote(symbol: "TEVA.TA", price: 120, sessionPrice: 120, previousClose: 118,
+                                    sparkline: [], sessionStart: nil, sessionEnd: nil)
+        let summary = try XCTUnwrap(PortfolioSummary.make(
+            positions: [(amd, amdQuote, "USD"), (teva, tevaQuote, "ILS")],
+            shekelsPerDollar: 4
+        ))
+        XCTAssertEqual(summary.value, 1100 + 3000, accuracy: 1e-9)
+        XCTAssertEqual(summary.dayChange, 50 + 50, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(summary.totalChange), 100 + 500, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(summary.totalChangePercent), 600.0 / 3500 * 100, accuracy: 1e-9)
+
+        // Without a cost, there is no total; without a rate, shekel holdings are left out.
+        amd.averageCost = nil
+        let partial = try XCTUnwrap(PortfolioSummary.make(positions: [(amd, amdQuote, "USD"), (teva, tevaQuote, "ILS")], shekelsPerDollar: nil))
+        XCTAssertEqual(partial.value, 1100, accuracy: 1e-9)
+        XCTAssertNil(partial.totalChange)
+        XCTAssertNil(PortfolioSummary.make(positions: [(teva, tevaQuote, "ILS")], shekelsPerDollar: nil))
+    }
+
+    func testPositionsAreSavedWithTheWatchlist() throws {
+        let suite = "DeskPulseTests.positions.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        XCTAssertFalse(settings.hasPositions)
+        settings.setPosition("AMD", shares: nil, averageCost: 120)
+        XCTAssertFalse(settings.hasPositions, "a cost alone is not a position, but it is kept")
+        settings.setPosition("AMD", shares: 10, averageCost: 120)
+        XCTAssertTrue(settings.hasPositions)
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertEqual(reloaded.watchlist.first { $0.symbol == "AMD" }?.shares, 10)
+        XCTAssertEqual(reloaded.watchlist.first { $0.symbol == "AMD" }?.averageCost, 120)
+        XCTAssertEqual(reloaded.marketStrip, WatchedSymbol.marketStripDefaults)
+        settings.setPosition("AMD", shares: 0, averageCost: nil)
+        XCTAssertFalse(settings.hasPositions)
+    }
+
+    func testAlertLevelsComeFromPriceAlerts() {
+        XCTAssertEqual(PriceAlert(symbol: "A", condition: .above(150)).priceLevel, 150)
+        XCTAssertNil(PriceAlert(symbol: "A", condition: .dailyMove(3)).priceLevel)
     }
 
     // MARK: Radio stations
@@ -194,7 +375,6 @@ final class DeskPulseTests: XCTestCase {
             year: 2026, month: 10, day: 3, hour: 12
         )))
         XCTAssertTrue(DataService.isMarketWeekend(saturdayNoon))
-        XCTAssertEqual(DataService.chartSession(at: saturdayNoon, marketStatus: "Closed"), .afterHours)
         XCTAssertEqual(DataService.extendedStatus(at: saturdayNoon), "Closed")
         let saturdayEvening = saturdayNoon.addingTimeInterval(6 * 3600)
         XCTAssertEqual(DataService.extendedStatus(at: saturdayEvening), "Closed", "not After Hours")
@@ -204,8 +384,6 @@ final class DeskPulseTests: XCTestCase {
             year: 2026, month: 11, day: 26, hour: 12
         )))
         XCTAssertFalse(DataService.isMarketWeekend(holidayNoon))
-        XCTAssertEqual(DataService.chartSession(at: holidayNoon, marketStatus: "Market Closed"), .afterHours)
-        XCTAssertEqual(DataService.chartSession(at: holidayNoon, marketStatus: "Open"), .regular)
     }
 
     func testWeatherCodesHaveMatchingIconsAndDescriptions() {
@@ -536,6 +714,9 @@ final class DeskPulseTests: XCTestCase {
     func testSymbolsAreNormalized() {
         XCTAssertEqual(WatchedSymbol.normalized(" nasdaq:amd "), "AMD")
         XCTAssertEqual(WatchedSymbol.normalized("brk.b"), "BRK.B")
+        XCTAssertEqual(WatchedSymbol.normalized("^gspc"), "^GSPC")
+        XCTAssertEqual(WatchedSymbol.normalized("ils=x"), "ILS=X")
+        XCTAssertEqual(WatchedSymbol.normalized("teva.ta"), "TEVA.TA")
         XCTAssertNil(WatchedSymbol.normalized("   "))
         XCTAssertNil(WatchedSymbol.normalized("!!!"))
     }

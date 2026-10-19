@@ -394,16 +394,6 @@ enum DataService {
         return tradingSession(at: time)
     }
 
-    /// Which part of the latest chart to show now. With the market closed for the day
-    /// (a weekend, a holiday, or overnight) the whole last session is shown, rather
-    /// than hiding its after-hours part because the clock reads "regular hours".
-    static func chartSession(at date: Date, marketStatus: String) -> TradingSession {
-        if isMarketWeekend(date) || marketStatus.localizedCaseInsensitiveContains("closed") {
-            return .afterHours
-        }
-        return tradingSession(at: date)
-    }
-
     static func extendedStatus(at date: Date) -> String {
         guard !isMarketWeekend(date) else { return "Closed" }
         return switch tradingSession(at: date) {

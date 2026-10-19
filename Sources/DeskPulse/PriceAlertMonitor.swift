@@ -27,7 +27,7 @@ final class PriceAlertMonitor {
     }
 
     /// Notifies about every alert this quote sets off.
-    func check(_ quote: StockQuote) {
+    func check(_ quote: MarketQuote) {
         let today = PriceAlertClock.today()
         for alert in settings.firePriceAlerts(for: quote, today: today) {
             Notifier.post(
@@ -35,7 +35,7 @@ final class PriceAlertMonitor {
                 title: alert.summary,
                 body: String(
                     format: "%@ is at %.2f (%+.2f%% today)",
-                    quote.symbol, quote.price, quote.changePercent
+                    quote.symbol, quote.price, quote.dayChangePercent
                 )
             )
         }
@@ -53,11 +53,14 @@ final class PriceAlertMonitor {
 
     private func run() async {
         while !Task.isCancelled {
-            let quotes = await fetchQuotes(for: symbolsToFetch())
+            let entries = symbolsToFetch()
+            let quotes = entries.isEmpty ? [] : Array(await MarketData.fetchQuotes(entries).quotes.values)
             for quote in quotes { check(quote) }
-            // Every 30 seconds while a market is trading, every 5 minutes otherwise.
+            // Every 30 seconds while a market is trading (or might be: pre-market and
+            // after-hours prices move too), every 5 minutes when all are idle.
+            let now = Date()
             let marketIsQuiet = !quotes.isEmpty && quotes.allSatisfy {
-                $0.marketStatus.localizedCaseInsensitiveContains("closed")
+                !$0.isTrading(at: now) && $0.extendedChange == nil
             }
             try? await Task.sleep(for: .seconds(marketIsQuiet ? 300 : 30))
         }
@@ -73,20 +76,5 @@ final class PriceAlertMonitor {
             .subtracting(covered)
             .sorted()
             .map { watched[$0] ?? WatchedSymbol(symbol: $0) }
-    }
-
-    nonisolated private func fetchQuotes(for entries: [WatchedSymbol]) async -> [StockQuote] {
-        await withTaskGroup(of: StockQuote?.self) { group in
-            for entry in entries {
-                group.addTask {
-                    await DataService.fetchQuote(symbol: entry.symbol, assetClass: entry.assetClass)?.quote
-                }
-            }
-            var quotes: [StockQuote] = []
-            for await quote in group {
-                if let quote { quotes.append(quote) }
-            }
-            return quotes
-        }
     }
 }

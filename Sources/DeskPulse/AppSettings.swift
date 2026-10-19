@@ -27,19 +27,38 @@ struct WatchedSymbol: Codable, Equatable, Hashable, Identifiable {
     var symbol: String
     /// Nasdaq's asset class ("stocks", "etf" or "index"), learned on first lookup.
     var assetClass: String?
+    /// A holding, for the portfolio line: number of shares (or units)...
+    var shares: Double?
+    /// ...and the average price paid per share, in the symbol's currency.
+    var averageCost: Double?
 
     var id: String { symbol }
 
-    /// "amd", " nasdaq:amd " → "AMD". Letters, digits, "." and "-" only.
+    /// "amd", " nasdaq:amd " → "AMD"; "^gspc", "ils=x", "teva.ta" keep their "^", "="
+    /// and "." (Yahoo's index, currency, futures and exchange suffixes).
     static func normalized(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let symbol = String(trimmed.split(separator: ":").last ?? "")
-            .filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }
-        return symbol.isEmpty || symbol.count > 12 ? nil : symbol
+            .filter { $0.isLetter || $0.isNumber || ".-^=".contains($0) }
+        return symbol.isEmpty || symbol.count > 16 ? nil : symbol
     }
 
     static let defaults: [WatchedSymbol] = ["AMD", "NVDA", "AVGO", "TSM", "SOXX"]
         .map { WatchedSymbol(symbol: $0) }
+
+    /// The market strip above the watchlist: US and Israeli indexes, the shekel,
+    /// bitcoin, oil and gold.
+    static let marketStripDefaults: [WatchedSymbol] = [
+        "^GSPC", "^IXIC", "^TA125.TA", "ILS=X", "BTC-USD", "CL=F", "GC=F"
+    ].map { WatchedSymbol(symbol: $0) }
+
+    /// Short names for the market strip, where company-style names don't fit.
+    static let shortNames: [String: String] = [
+        "^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^DJI": "Dow", "^RUT": "Russell",
+        "^TA125.TA": "TA-125", "TA35.TA": "TA-35", "^VIX": "VIX",
+        "ILS=X": "USD/ILS", "EURILS=X": "EUR/ILS", "BTC-USD": "Bitcoin", "ETH-USD": "Ether",
+        "CL=F": "Oil", "GC=F": "Gold", "SI=F": "Silver", "^TNX": "10Y yield"
+    ]
 }
 
 struct WorldClock: Codable, Equatable, Hashable, Identifiable {
@@ -127,12 +146,22 @@ struct PriceAlert: Codable, Equatable, Hashable, Identifiable {
     /// at most once per trading day.
     var lastFiredDay: String?
 
-    func isTriggered(by quote: StockQuote, today: String) -> Bool {
+    /// Prices include pre-market and after-hours trades; daily moves are the regular
+    /// session's change.
+    func isTriggered(by quote: MarketQuote, today: String) -> Bool {
         guard quote.symbol == symbol else { return false }
         switch condition {
         case .above(let price): return quote.price >= price
         case .below(let price): return quote.price <= price
-        case .dailyMove(let percent): return abs(quote.changePercent) >= percent && lastFiredDay != today
+        case .dailyMove(let percent): return abs(quote.dayChangePercent) >= percent && lastFiredDay != today
+        }
+    }
+
+    /// The price line this alert draws on a chart, if it has one.
+    var priceLevel: Double? {
+        switch condition {
+        case .above(let price), .below(let price): price
+        case .dailyMove: nil
         }
     }
 
@@ -165,7 +194,7 @@ final class AppSettings: ObservableObject {
     @Published var weatherLocation: WeatherLocation { didSet { save(weatherLocation, Key.weatherLocation) } }
     @Published var temperatureUnit: TemperatureUnit { didSet { save(temperatureUnit, Key.temperatureUnit) } }
     @Published var watchlist: [WatchedSymbol] { didSet { save(watchlist, Key.watchlist) } }
-    /// The symbol shown large with its intraday chart on the stock card.
+    /// The symbol whose chart the stock card shows when it is expanded.
     @Published var featuredSymbol: String { didSet { save(featuredSymbol, Key.featuredSymbol) } }
     @Published var clocks: [WorldClock] { didSet { save(clocks, Key.clocks) } }
     @Published var newsSources: [NewsSource] { didSet { save(newsSources, Key.newsSources) } }
@@ -180,6 +209,13 @@ final class AppSettings: ObservableObject {
     /// Built-in radio stations (by ID) that are hidden from the radio card.
     @Published var hiddenRadioStations: Set<String> { didSet { save(hiddenRadioStations, Key.hiddenRadioStations) } }
     @Published var customRadioStations: [CustomRadioStation] { didSet { save(customRadioStations, Key.customRadioStations) } }
+    /// Indexes, currencies and commodities shown above the watchlist.
+    @Published var marketStrip: [WatchedSymbol] { didSet { save(marketStrip, Key.marketStrip) } }
+    @Published var showsMarketStrip: Bool { didSet { save(showsMarketStrip, Key.showsMarketStrip) } }
+    /// Whether the stock card shows `featuredSymbol`'s chart instead of the watchlist.
+    @Published var stockCardShowsChart: Bool { didSet { save(stockCardShowsChart, Key.stockCardShowsChart) } }
+    /// The range of the expanded symbol's chart.
+    @Published var stockChartRange: ChartRange { didSet { save(stockChartRange, Key.stockChartRange) } }
     /// Sends 10 s of the playing station to Shazam every 90 s to name the song.
     @Published var recognizesSongs: Bool { didSet { save(recognizesSongs, Key.recognizesSongs) } }
 
@@ -200,6 +236,10 @@ final class AppSettings: ObservableObject {
         static let hiddenRadioStations = "settings.hidden-radio-stations.v1"
         static let customRadioStations = "settings.custom-radio-stations.v1"
         static let recognizesSongs = "settings.recognize-songs.v1"
+        static let marketStrip = "settings.market-strip.v1"
+        static let showsMarketStrip = "settings.shows-market-strip.v1"
+        static let stockChartRange = "settings.stock-chart-range.v1"
+        static let stockCardShowsChart = "settings.stock-card-shows-chart.v1"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -224,11 +264,35 @@ final class AppSettings: ObservableObject {
         hiddenRadioStations = load(Key.hiddenRadioStations, [])
         customRadioStations = load(Key.customRadioStations, [])
         recognizesSongs = load(Key.recognizesSongs, true)
+        marketStrip = load(Key.marketStrip, WatchedSymbol.marketStripDefaults)
+        showsMarketStrip = load(Key.showsMarketStrip, true)
+        stockChartRange = load(Key.stockChartRange, ChartRange.day)
+        stockCardShowsChart = load(Key.stockCardShowsChart, false)
+    }
+
+    var hasPositions: Bool {
+        watchlist.contains { ($0.shares ?? 0) != 0 }
+    }
+
+    /// Records a holding. Zero shares count as none; the cost is kept so it can be
+    /// typed before the shares.
+    func setPosition(_ symbol: String, shares: Double?, averageCost: Double?) {
+        guard let index = watchlist.firstIndex(where: { $0.symbol == symbol }) else { return }
+        watchlist[index].shares = (shares ?? 0) == 0 ? nil : shares
+        watchlist[index].averageCost = averageCost
+    }
+
+    func addStripSymbol(_ raw: String) {
+        guard
+            let symbol = WatchedSymbol.normalized(raw),
+            !marketStrip.contains(where: { $0.symbol == symbol })
+        else { return }
+        marketStrip.append(WatchedSymbol(symbol: symbol))
     }
 
     /// Returns the price alerts this quote sets off, removing one-shot alerts and
     /// marking daily-move alerts as fired for today.
-    func firePriceAlerts(for quote: StockQuote, today: String) -> [PriceAlert] {
+    func firePriceAlerts(for quote: MarketQuote, today: String) -> [PriceAlert] {
         let fired = priceAlerts.filter { $0.isTriggered(by: quote, today: today) }
         guard !fired.isEmpty else { return [] }
         let firedIDs = Set(fired.map(\.id))
