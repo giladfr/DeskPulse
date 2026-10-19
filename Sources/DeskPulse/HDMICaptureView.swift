@@ -710,6 +710,7 @@ private struct CapturePreview: NSViewRepresentable {
         view.frameSize = frameSize
         view.contentRect = contentRect
         view.fillsScreen = fillsScreen
+        view.updatePreviewFrame()
         if enhancesColor {
             let color = CIFilter(name: "CIColorControls")
             color?.setValue(1.08, forKey: kCIInputSaturationKey)
@@ -741,8 +742,26 @@ private struct CapturePreview: NSViewRepresentable {
 
         required init?(coder: NSCoder) { nil }
 
+        // A layer-backed view that isn't laid out with constraints doesn't reliably
+        // get layout() when SwiftUI resizes it. If the only pass ran while the view
+        // was still zero-sized, the preview stayed zero-sized and the screen black
+        // (with LIVE showing), so the frame is also updated on every size change.
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            updatePreviewFrame()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            updatePreviewFrame()
+        }
+
         override func layout() {
             super.layout()
+            updatePreviewFrame()
+        }
+
+        func updatePreviewFrame() {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             previewLayer.frame = frameSize.map {

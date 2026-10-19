@@ -60,17 +60,31 @@ struct RadioStation: Identifiable, Equatable {
     }
 }
 
+/// Metadata items are immutable once delivered, and are only read after this.
+private struct DeliveredMetadata: @unchecked Sendable {
+    let items: [AVMetadataItem]
+}
+
 private final class RadioMetadataReceiver: NSObject, AVPlayerItemMetadataOutputPushDelegate,
     @unchecked Sendable
 {
-    var onMetadata: (([AVMetadataItem]) -> Void)?
+    /// The stream's metadata strings, e.g. "StreamTitle='Artist - Title';".
+    var onMetadata: (@MainActor @Sendable ([String]) -> Void)?
 
     func metadataOutput(
         _ output: AVPlayerItemMetadataOutput,
         didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
         from track: AVPlayerItemTrack?
     ) {
-        onMetadata?(groups.flatMap(\.items))
+        let delivered = DeliveredMetadata(items: groups.flatMap(\.items))
+        guard let deliver = onMetadata else { return }
+        Task {
+            var strings: [String] = []
+            for item in delivered.items {
+                if let value = try? await item.load(.stringValue) { strings.append(value) }
+            }
+            await deliver(strings)
+        }
     }
 }
 
@@ -333,10 +347,8 @@ final class RadioPlayerModel: ObservableObject {
         // A custom station may be saved; keep its ID until the station list arrives.
         selectedID = UserDefaults.standard.string(forKey: selectionKey) ?? RadioStation.all[0].id
         player.volume = Float(volume)
-        metadataReceiver.onMetadata = { [weak self] items in
-            Task { @MainActor [weak self] in
-                self?.consumeMetadata(items)
-            }
+        metadataReceiver.onMetadata = { [weak self] strings in
+            self?.consumeMetadata(strings)
         }
         installMediaCommands()
     }
@@ -419,8 +431,8 @@ final class RadioPlayerModel: ObservableObject {
         isPlaying = false
     }
 
-    private func consumeMetadata(_ items: [AVMetadataItem]) {
-        let values = items.compactMap(\.stringValue)
+    private func consumeMetadata(_ strings: [String]) {
+        let values = strings
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard let raw = values.last else { return }

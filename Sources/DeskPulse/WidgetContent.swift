@@ -222,6 +222,11 @@ private struct WeatherWidget: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+        } else if model.failedKinds.contains(.weather) {
+            UnavailableState(
+                message: "Couldn't load the weather for \(model.settings.weatherLocation.name).",
+                isRetrying: model.isRefreshing
+            ) { Task { await model.refresh() } }
         } else {
             LoadingState(label: "Loading \(model.settings.weatherLocation.name) weather…")
         }
@@ -233,20 +238,22 @@ private struct WeatherWidget: View {
     }
 
     private func weatherSymbol(_ code: Int) -> String {
-        switch code {
-        case 0: "sun.max.fill"
-        case 1...3: "cloud.sun.fill"
-        case 45, 48: "cloud.fog.fill"
-        case 51...82: "cloud.rain.fill"
-        case 95...99: "cloud.bolt.rain.fill"
-        default: "cloud.fill"
-        }
+        DataService.weatherSymbol(code)
     }
 }
 
 private struct FeedWidget: View {
     enum Source {
         case ynet, rotter, cnn, fox
+
+        var kind: WidgetKind {
+            switch self {
+            case .ynet: .ynet
+            case .rotter: .rotter
+            case .cnn: .cnn
+            case .fox: .fox
+            }
+        }
 
         var isRTL: Bool {
             self == .ynet || self == .rotter
@@ -274,7 +281,12 @@ private struct FeedWidget: View {
     }
 
     var body: some View {
-        if items.isEmpty {
+        if items.isEmpty, model.failedKinds.contains(source.kind) {
+            UnavailableState(
+                message: "Couldn't load \(source.kind.title) headlines.",
+                isRetrying: model.isRefreshing
+            ) { Task { await model.refresh() } }
+        } else if items.isEmpty {
             LoadingState(label: "Loading headlines…")
         } else {
             ScrollView {
@@ -376,6 +388,11 @@ private struct MyNewsWidget: View {
                     .controlSize(.small)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.myNewsItems.isEmpty, model.failedKinds.contains(.myNews) {
+            UnavailableState(
+                message: "Couldn't load headlines from your news sources.",
+                isRetrying: model.isRefreshing
+            ) { Task { await model.refresh() } }
         } else if model.myNewsItems.isEmpty {
             LoadingState(label: "Loading headlines…")
         } else {
@@ -465,6 +482,8 @@ private struct LiveTVWidget: View {
     let channel: String
     let label: String
     @State private var playerSource: LiveTVPlayerSource?
+    @State private var lookupFailed = false
+    @State private var attempt = 0
 
     var body: some View {
         Group {
@@ -483,13 +502,27 @@ private struct LiveTVWidget: View {
                         pageZoom: 1
                     )
                 }
+            } else if lookupFailed {
+                UnavailableState(
+                    message: "Couldn't find the \(label) player. Trying again every 30 seconds.",
+                    isRetrying: false
+                ) { attempt += 1 }
             } else {
                 LoadingState(label: "Locating \(label) player…")
             }
         }
         .id(channel)
-        .task {
-            playerSource = await DataService.fetchLiveTVPlayerSource(channel: channel)
+        // Retry tapped: start over at once instead of waiting out the 30 seconds.
+        .task(id: attempt) {
+            while playerSource == nil, !Task.isCancelled {
+                if let source = await DataService.fetchLiveTVPlayerSource(channel: channel) {
+                    playerSource = source
+                    lookupFailed = false
+                    return
+                }
+                lookupFailed = true
+                try? await Task.sleep(for: .seconds(30))
+            }
         }
     }
 
@@ -555,6 +588,33 @@ private struct IsraelRedAlertWidget: View {
             pageZoom: 0.78,
             userScript: Self.compactScript
         )
+    }
+}
+
+/// A card whose data could not be fetched: says so and offers to try again.
+struct UnavailableState: View {
+    let message: String
+    let isRetrying: Bool
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.title3)
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if isRetrying {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Retry", action: retry)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
