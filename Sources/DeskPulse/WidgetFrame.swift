@@ -81,6 +81,7 @@ struct WidgetFrame: View {
             .onChanged { value in
                 if dragOrigin == nil {
                     dragOrigin = CGPoint(x: widget.x, y: widget.y)
+                    model.bringToFront(widget.id)
                 }
                 guard let origin = dragOrigin else { return }
                 previewPosition = CGPoint(
@@ -113,6 +114,7 @@ struct WidgetFrame: View {
 
     private func updateResize(_ direction: ResizeDirection, _ translation: CGSize) {
         if resizeOrigin == nil {
+            model.bringToFront(widget.id)
             resizeOrigin = CGRect(
                 x: widget.x, y: widget.y,
                 width: widget.width, height: widget.height

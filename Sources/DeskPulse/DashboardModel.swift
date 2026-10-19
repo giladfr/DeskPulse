@@ -16,6 +16,12 @@ final class DashboardModel: ObservableObject {
     @Published var myNewsItems: [NewsItem] = []
     @Published var lastRefresh: Date?
     @Published var isRefreshing = false
+    /// Open data cards whose last refresh brought nothing, so they show an error
+    /// with a retry button instead of loading forever.
+    @Published private(set) var failedKinds: Set<WidgetKind> = []
+    /// Widgets most recently moved or resized, last on top. Only affects overlapping
+    /// widgets, and is not saved with layouts.
+    @Published private(set) var stackingOrder: [UUID] = []
     @Published var needsInitialArrange = false
     @Published private(set) var hiddenKinds: Set<WidgetKind> {
         didSet { refreshIfDataWidgetsAppeared(previouslyHidden: oldValue) }
@@ -44,12 +50,15 @@ final class DashboardModel: ObservableObject {
     private var sleepAssertionID = IOPMAssertionID(0)
     /// Real-time Red Alert connection, open while incoming-alert detection is on.
     let redAlert = RedAlertMonitor()
+    /// Price alerts, checked whether or not the stock card is open.
+    let priceAlerts: PriceAlertMonitor
     private var refreshRequestedAgain = false
     private var settingsObservation: AnyCancellable?
     let settings: AppSettings
 
     init(settings: AppSettings = AppSettings()) {
         self.settings = settings
+        priceAlerts = PriceAlertMonitor(settings: settings)
         let defaults = UserDefaults.standard
         incomingAlertDetectionEnabled = defaults.object(
             forKey: incomingAlertDetectionStorageKey
@@ -86,6 +95,7 @@ final class DashboardModel: ObservableObject {
         ensureWidgetLibrary()
         observeSettings()
         redAlert.onAlert = { [weak self] alert in self?.handle(alert) }
+        priceAlerts.isStockCardVisible = { [weak self] in self?.isVisible(.stocks) ?? false }
     }
 
     /// Re-fetches weather and news soon after their settings change, instead of
@@ -149,7 +159,8 @@ final class DashboardModel: ObservableObject {
             }
         }
         if incomingAlertDetectionEnabled { redAlert.start() }
-        if !settings.priceAlerts.isEmpty || (incomingAlertDetectionEnabled && settings.notifiesIncomingAlerts) {
+        priceAlerts.start()
+        if incomingAlertDetectionEnabled && settings.notifiesIncomingAlerts {
             Notifier.setUp()
         }
     }
@@ -192,6 +203,14 @@ final class DashboardModel: ObservableObject {
             }
         }
         if !results.4.isEmpty { foxItems = results.4 }
+        var failed = Set<WidgetKind>()
+        if wantsWeather && weather == nil { failed.insert(.weather) }
+        if wantsYnet && ynetItems.isEmpty { failed.insert(.ynet) }
+        if wantsRotter && rotterItems.isEmpty { failed.insert(.rotter) }
+        if wantsCNN && cnnItems.isEmpty { failed.insert(.cnn) }
+        if wantsFox && foxItems.isEmpty { failed.insert(.fox) }
+        if !newsSources.isEmpty && myNewsItems.isEmpty { failed.insert(.myNews) }
+        failedKinds = failed
         lastRefresh = Date()
         isRefreshing = false
         if refreshRequestedAgain {
@@ -354,6 +373,18 @@ final class DashboardModel: ObservableObject {
             width: defaultWidth, height: defaultHeight
         ))
         save()
+    }
+
+    func bringToFront(_ id: UUID) {
+        guard stackingOrder.last != id else { return }
+        stackingOrder.removeAll { $0 == id }
+        stackingOrder.append(id)
+    }
+
+    /// Higher for widgets brought to the front more recently.
+    func stackingLevel(of id: UUID) -> Double {
+        guard let index = stackingOrder.firstIndex(of: id) else { return 1 }
+        return 2 + Double(index)
     }
 
     func remove(_ id: UUID) {

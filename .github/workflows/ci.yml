@@ -21,6 +21,10 @@ jobs:
             spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
       - name: Test DeskPulse
         run: swift test
-      # build-app.sh ships the release configuration, which the tests don't compile.
+      # build-app.sh ships the release configuration. Some Swift concurrency bugs only
+      # appear there (the 1.0 Red Alert ping crash passed the debug tests), so the
+      # tests run against an optimized build too.
+      - name: Test release build
+        run: swift test -c release -Xswiftc -enable-testing
       - name: Build release
         run: swift build -c release

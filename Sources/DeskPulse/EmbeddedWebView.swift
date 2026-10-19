@@ -56,7 +56,7 @@ struct EmbeddedWebView: NSViewRepresentable {
         case .url(let url):
             view.load(URLRequest(url: url))
         case .html(let html):
-            view.loadHTMLString(html, baseURL: URL(string: "https://s.tradingview.com"))
+            view.loadHTMLString(html, baseURL: nil)
         }
     }
 
@@ -91,6 +91,24 @@ struct EmbeddedWebView: NSViewRepresentable {
                 return .cancel
             }
             return .allow
+        }
+
+        /// macOS ends a page's web content process under memory pressure (and it can
+        /// crash), which leaves the view blank. On a dashboard that runs for days that
+        /// would mean an empty Gmail or WhatsApp card, so the page is loaded again.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            switch loadedSource {
+            // Generated players (live TV) are rebuilt; their URL is about:blank.
+            case .html(let html): webView.loadHTMLString(html, baseURL: nil)
+            // Sites reload where the user was, e.g. an open Gmail thread.
+            case .url(let url):
+                if webView.url == nil {
+                    webView.load(URLRequest(url: url))
+                } else {
+                    webView.reload()
+                }
+            case nil: webView.reload()
+            }
         }
 
         func webView(

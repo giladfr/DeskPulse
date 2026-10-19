@@ -133,18 +133,8 @@ struct StocksWidget: View {
             market.onAssetClass = { symbol, assetClass in
                 settings.setAssetClass(assetClass, for: symbol)
             }
-            market.onQuote = { quote in
-                for alert in settings.firePriceAlerts(for: quote, today: PriceAlertClock.today()) {
-                    Notifier.post(
-                        id: "price-alert-\(alert.id.uuidString)-\(PriceAlertClock.today())",
-                        title: alert.summary,
-                        body: String(
-                            format: "%@ is at %.2f (%+.2f%% today)",
-                            quote.symbol, quote.price, quote.changePercent
-                        )
-                    )
-                }
-            }
+            let priceAlerts = dashboard.priceAlerts
+            market.onQuote = { quote in priceAlerts.check(quote) }
             market.configure(watchlist: settings.watchlist, featured: featured)
         }
         .onChange(of: settings.watchlist) { _, watchlist in
@@ -168,7 +158,10 @@ struct StocksWidget: View {
                     StockSessionGraph(
                         chart: chart,
                         currentPrice: quote.price,
-                        extendedSession: DataService.tradingSession(at: Date())
+                        extendedSession: DataService.chartSession(
+                            at: Date(),
+                            marketStatus: quote.marketStatus
+                        )
                     )
                     .frame(maxHeight: .infinity)
                     chartFooter(chart, quote: quote)
@@ -413,7 +406,7 @@ struct PriceAlertForm: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled((value ?? 0) <= 0)
             }
-            Text("You'll get a macOS notification while the stock card is on the dashboard.")
+            Text("You'll get a macOS notification, even when the stock card is hidden.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -605,11 +598,14 @@ struct StockSessionGraph: View {
     }
 
     private var visiblePoints: [StockChartPoint] {
-        switch extendedSession {
+        let points = switch extendedSession {
         case .premarket: chart.points.filter { $0.session == .premarket }
         case .afterHours: chart.points
         case .regular: chart.points.filter { $0.session != .afterHours }
         }
+        // Early in the morning the chart still holds yesterday, with no pre-market
+        // points yet; show yesterday rather than an empty chart.
+        return points.count > 1 ? points : chart.points
     }
 
     private struct Layout {

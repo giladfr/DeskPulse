@@ -51,7 +51,7 @@ struct DashboardView: View {
                     WidgetFrame(widget: widget, canvasSize: proxy.size)
                         .environmentObject(model)
                         .environmentObject(model.settings)
-                        .zIndex(1)
+                        .zIndex(model.stackingLevel(of: widget.id))
                 }
                 Color.clear
                     .onAppear {
@@ -118,7 +118,8 @@ struct DashboardView: View {
 
     private var refreshHelp: String {
         if model.isRefreshing { return "Refreshing news and weather…" }
-        let base = "Refresh news and weather now (they also refresh every 2 minutes)"
+        let minutes = max(1, settings.refreshMinutes)
+        let base = "Refresh news and weather now (they also refresh every \(minutes == 1 ? "minute" : "\(minutes) minutes"))"
         guard let lastRefresh = model.lastRefresh else { return base }
         return "\(base) · last updated \(lastRefresh.formatted(date: .omitted, time: .shortened))"
     }

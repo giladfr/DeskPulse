@@ -59,9 +59,23 @@ final class DeskPulseTests: XCTestCase {
     func testKeepAlivePingHandlerRunsOffTheMainThread() async throws {
         let socket = URLSession.shared.webSocketTask(with: try XCTUnwrap(URL(string: "ws://127.0.0.1:9/")))
         socket.resume()
-        sendKeepAlivePing(socket)
+        let pongs = PongTracker()
+        sendKeepAlivePing(socket, pongs: pongs)
         try await Task.sleep(for: .seconds(1.5))
         socket.cancel(with: .goingAway, reason: nil)
+        // A failed ping is not an answer, so a dead connection gets noticed.
+        XCTAssertEqual(pongs.unansweredPings, 1)
+    }
+
+    func testAnsweredPingResetsTheCount() {
+        let pongs = PongTracker()
+        pongs.pingSent()
+        pongs.pingSent()
+        XCTAssertEqual(pongs.unansweredPings, 2)
+        pongs.pongReceived(URLError(.timedOut))
+        XCTAssertEqual(pongs.unansweredPings, 2)
+        pongs.pongReceived(nil)
+        XCTAssertEqual(pongs.unansweredPings, 0)
     }
 
     func testRedAlertAreaFilter() {
@@ -170,6 +184,39 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertEqual(DataService.tradingSession(at: try date(hour: 9, minute: 30)), .regular)
         XCTAssertEqual(DataService.tradingSession(at: try date(hour: 15, minute: 59)), .regular)
         XCTAssertEqual(DataService.tradingSession(at: try date(hour: 16, minute: 0)), .afterHours)
+    }
+
+    func testWeekendsAndClosedMarketsShowTheWholeLastSession() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+        // Saturday 3 October 2026, 12:00 New York: "regular hours" by the clock alone.
+        let saturdayNoon = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 10, day: 3, hour: 12
+        )))
+        XCTAssertTrue(DataService.isMarketWeekend(saturdayNoon))
+        XCTAssertEqual(DataService.chartSession(at: saturdayNoon, marketStatus: "Closed"), .afterHours)
+        XCTAssertEqual(DataService.extendedStatus(at: saturdayNoon), "Closed")
+        let saturdayEvening = saturdayNoon.addingTimeInterval(6 * 3600)
+        XCTAssertEqual(DataService.extendedStatus(at: saturdayEvening), "Closed", "not After Hours")
+
+        // A weekday holiday: the clock says regular hours, Nasdaq says closed.
+        let holidayNoon = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 11, day: 26, hour: 12
+        )))
+        XCTAssertFalse(DataService.isMarketWeekend(holidayNoon))
+        XCTAssertEqual(DataService.chartSession(at: holidayNoon, marketStatus: "Market Closed"), .afterHours)
+        XCTAssertEqual(DataService.chartSession(at: holidayNoon, marketStatus: "Open"), .regular)
+    }
+
+    func testWeatherCodesHaveMatchingIconsAndDescriptions() {
+        XCTAssertEqual(DataService.weatherSymbol(73), "cloud.snow.fill")
+        XCTAssertEqual(DataService.weatherSymbol(86), "cloud.snow.fill")
+        XCTAssertEqual(DataService.weatherSymbol(53), "cloud.drizzle.fill")
+        XCTAssertEqual(DataService.weatherSymbol(66), "cloud.sleet.fill")
+        XCTAssertEqual(DataService.weatherSymbol(63), "cloud.rain.fill")
+        XCTAssertEqual(DataService.weatherDescription(73), "Snow")
+        XCTAssertEqual(DataService.weatherDescription(53), "Drizzle")
+        XCTAssertEqual(DataService.weatherDescription(67), "Freezing rain")
     }
 
     func testNasdaqChartLabelsDetermineTradingSession() {
@@ -377,6 +424,35 @@ final class DeskPulseTests: XCTestCase {
         let expected = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-24T07:15:00Z"))
         XCTAssertEqual(items.first?.date, expected)
         XCTAssertNil(items.last?.date)
+    }
+
+    /// XMLParser hands over text in pieces, split at every entity, so a link with
+    /// "&amp;" used to keep only the part before it.
+    func testFeedLinksKeepEverythingAfterAnAmpersand() {
+        let xml = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Story</title>
+            <guid isPermaLink="false">story-123</guid>
+            <link>https://example.com/a?at_medium=RSS&amp;at_campaign=rss</link>
+          </item>
+          <item><title>Only an ID</title><guid isPermaLink="false">story-456</guid></item>
+        </channel></rss>
+        """
+        let items = DataService.parseFeed(Data(xml.utf8))
+        XCTAssertEqual(items.first?.link, URL(string: "https://example.com/a?at_medium=RSS&at_campaign=rss"))
+        XCTAssertNil(items.last?.link, "a GUID that isn't a web address is not a link")
+    }
+
+    func testAtomPrefersTheAlternateLink() {
+        let xml = """
+        <feed xmlns="http://www.w3.org/2005/Atom"><entry>
+          <title>Entry</title>
+          <link rel="self" href="https://example.com/api/entry"/>
+          <link rel="alternate" href="https://example.com/entry"/>
+        </entry></feed>
+        """
+        XCTAssertEqual(DataService.parseFeed(Data(xml.utf8)).first?.link, URL(string: "https://example.com/entry"))
     }
 
     func testParsesAtomEntriesWithISODates() throws {

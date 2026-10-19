@@ -322,17 +322,35 @@ enum DataService {
         return URL(string: value).map(LiveTVPlayerSource.web)
     }
 
-    private static func weatherDescription(_ code: Int) -> String {
+    /// WMO weather codes, as used by Open-Meteo.
+    static func weatherDescription(_ code: Int) -> String {
         switch code {
         case 0: "Clear"
         case 1...3: "Partly cloudy"
         case 45, 48: "Foggy"
-        case 51...67: "Rain"
+        case 51...55: "Drizzle"
+        case 56, 57, 66, 67: "Freezing rain"
+        case 61...65: "Rain"
         case 71...77: "Snow"
         case 80...82: "Showers"
         case 85, 86: "Snow showers"
         case 95...99: "Thunderstorms"
         default: "Current conditions"
+        }
+    }
+
+    /// The SF Symbol for a WMO weather code.
+    static func weatherSymbol(_ code: Int) -> String {
+        switch code {
+        case 0: "sun.max.fill"
+        case 1...3: "cloud.sun.fill"
+        case 45, 48: "cloud.fog.fill"
+        case 51...55: "cloud.drizzle.fill"
+        case 56, 57, 66, 67: "cloud.sleet.fill"
+        case 61...65, 80...82: "cloud.rain.fill"
+        case 71...77, 85, 86: "cloud.snow.fill"
+        case 95...99: "cloud.bolt.rain.fill"
+        default: "cloud.fill"
         }
     }
 
@@ -342,10 +360,20 @@ enum DataService {
         return Double(cleaned)
     }
 
-    static func tradingSession(at date: Date) -> TradingSession {
+    private static let easternCalendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
-        let components = calendar.dateComponents([.hour, .minute], from: date)
+        return calendar
+    }()
+
+    /// Saturday or Sunday in New York, when US markets have no sessions at all.
+    static func isMarketWeekend(_ date: Date) -> Bool {
+        easternCalendar.isDateInWeekend(date)
+    }
+
+    /// The session a chart point or quote belongs to, by New York time of day.
+    static func tradingSession(at date: Date) -> TradingSession {
+        let components = easternCalendar.dateComponents([.hour, .minute], from: date)
         let minute = (components.hour ?? 0) * 60 + (components.minute ?? 0)
         if minute < 9 * 60 + 30 { return .premarket }
         if minute >= 16 * 60 { return .afterHours }
@@ -353,7 +381,7 @@ enum DataService {
     }
 
     /// Shared because it parses every point of every chart refresh.
-    nonisolated(unsafe) private static let chartTimeFormatter: DateFormatter = {
+    private static let chartTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "America/New_York")
@@ -366,8 +394,19 @@ enum DataService {
         return tradingSession(at: time)
     }
 
-    private static func extendedStatus(at date: Date) -> String {
-        switch tradingSession(at: date) {
+    /// Which part of the latest chart to show now. With the market closed for the day
+    /// (a weekend, a holiday, or overnight) the whole last session is shown, rather
+    /// than hiding its after-hours part because the clock reads "regular hours".
+    static func chartSession(at date: Date, marketStatus: String) -> TradingSession {
+        if isMarketWeekend(date) || marketStatus.localizedCaseInsensitiveContains("closed") {
+            return .afterHours
+        }
+        return tradingSession(at: date)
+    }
+
+    static func extendedStatus(at date: Date) -> String {
+        guard !isMarketWeekend(date) else { return "Closed" }
+        return switch tradingSession(at: date) {
         case .premarket: "Pre-Market"
         case .regular: "Closed"
         case .afterHours: "After Hours"
@@ -380,7 +419,10 @@ private final class FeedParser: NSObject, XMLParserDelegate {
     private var insideItem = false
     private var currentElement = ""
     private var title = ""
+    /// An Atom `<link href>`; RSS links are element text, gathered in `linkText`.
     private var link = ""
+    private var linkText = ""
+    private var guid = ""
     private var date = ""
 
     func parse(data: Data) -> [FeedItem] {
@@ -396,9 +438,10 @@ private final class FeedParser: NSObject, XMLParserDelegate {
         currentElement = elementName.lowercased()
         if currentElement == "item" || currentElement == "entry" {
             insideItem = true
-            title = ""; link = ""; date = ""
-        } else if insideItem, currentElement == "link",
-                  let href = attributeDict["href"] {
+            title = ""; link = ""; linkText = ""; guid = ""; date = ""
+        } else if insideItem, currentElement == "link", link.isEmpty,
+                  let href = attributeDict["href"],
+                  ["alternate", nil].contains(attributeDict["rel"]) {
             link = href
         }
     }
@@ -407,7 +450,10 @@ private final class FeedParser: NSObject, XMLParserDelegate {
         guard insideItem else { return }
         switch currentElement {
         case "title": title += string
-        case "link", "guid": if link.isEmpty { link += string }
+        // XMLParser delivers text in pieces, e.g. split at every "&amp;", so the
+        // whole value has to be collected before it is used.
+        case "link": linkText += string
+        case "guid": guid += string
         case "pubdate", "published", "updated": date += string
         default: break
         }
@@ -422,13 +468,23 @@ private final class FeedParser: NSObject, XMLParserDelegate {
             if !cleanTitle.isEmpty {
                 items.append(FeedItem(
                     title: cleanTitle,
-                    link: URL(string: link.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    link: Self.itemURL(link: link, linkText: linkText, guid: guid),
                     date: Self.parseDate(date)
                 ))
             }
             insideItem = false
         }
         currentElement = ""
+    }
+
+    /// The Atom link, else the RSS `<link>`, else a `<guid>` that is a web address
+    /// (non-permalink GUIDs are arbitrary IDs).
+    private static func itemURL(link: String, linkText: String, guid: String) -> URL? {
+        let candidates = [link, linkText, guid]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard let address = candidates.first(where: { $0.lowercased().hasPrefix("http") })
+        else { return nil }
+        return URL(string: address)
     }
 
     // Created once: formatters are expensive, and parsing is safe to share.
@@ -438,7 +494,7 @@ private final class FeedParser: NSObject, XMLParserDelegate {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-    nonisolated(unsafe) private static let rfc822Formatters: [DateFormatter] = [
+    private static let rfc822Formatters: [DateFormatter] = [
         "EEE, dd MMM yyyy HH:mm:ss Z",
         "EEE, dd MMM yyyy HH:mm:ss zzz",
         "dd MMM yyyy HH:mm:ss Z"
