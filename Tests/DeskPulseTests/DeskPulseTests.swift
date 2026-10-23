@@ -390,6 +390,79 @@ final class DeskPulseTests: XCTestCase {
         ))
     }
 
+    func testHeatmapCategoriesAreWellFormed() {
+        let categories = TradingFeeds.heatmapCategories
+        XCTAssertEqual(Set(categories.map(\.id)).count, categories.count, "unique IDs")
+        XCTAssertFalse(categories.contains { $0.id == TradingFeeds.watchlistCategoryID })
+        XCTAssertEqual(categories.first?.symbols, TradingFeeds.semiconductorSymbols, "semis first, as before")
+        for category in categories {
+            XCTAssertFalse(category.symbols.isEmpty, category.name)
+            XCTAssertLessThanOrEqual(category.symbols.count, 20, "\(category.name): tiles stay at least as large as the semis'")
+            XCTAssertEqual(Set(category.symbols).count, category.symbols.count, "\(category.name): no repeats")
+            for symbol in category.symbols + category.benchmarks {
+                XCTAssertEqual(WatchedSymbol.normalized(symbol), symbol, "\(category.name): \(symbol)")
+            }
+        }
+    }
+
+    func testTechOverviewShowsEachSectorsLeadersOnce() {
+        let sections = TradingFeeds.overviewSections()
+        XCTAssertEqual(sections.map(\.category.id), ["semis", "hyperscalers", "software", "cyber", "ai-infra", "israel"])
+        let all = sections.flatMap(\.symbols)
+        XCTAssertEqual(Set(all).count, all.count, "no stock twice")
+        XCTAssertEqual(sections.first?.symbols.count, 9)
+        XCTAssertTrue(sections.dropFirst().allSatisfy { $0.symbols.count == 6 })
+        XCTAssertFalse(sections[2].symbols.contains("ORCL"), "Oracle is already among the hyperscalers")
+        XCTAssertFalse(sections[5].symbols.contains("CHKP"), "Check Point is already in cybersecurity")
+    }
+
+    /// A bigger card shows more names, never smaller tiles; the starting card is
+    /// unchanged.
+    func testOverviewUsesSpareSpaceForMoreNames() {
+        func tiles(_ plan: TradingFeeds.OverviewPlan) -> [String] {
+            plan.columns.flatMap { $0.flatMap(\.symbols) }
+        }
+        // The card in layout 3: 592 x 618 points of content.
+        let small = TradingFeeds.overviewPlan(width: 592, height: 618)
+        XCTAssertEqual(small.across, 3)
+        XCTAssertGreaterThanOrEqual(small.tileHeight, 72)
+        XCTAssertGreaterThanOrEqual(tiles(small).count, 39)
+
+        // Taller: more rows, tiles no smaller.
+        let tall = TradingFeeds.overviewPlan(width: 592, height: 900)
+        XCTAssertGreaterThan(tiles(tall).count, tiles(small).count)
+        XCTAssertGreaterThanOrEqual(tall.tileHeight, 72)
+
+        // The real card is a little shorter (title bar): the shorter column sets the
+        // tile height and the other fills its spare row rather than leaving it empty.
+        let real = TradingFeeds.overviewPlan(width: 592, height: 582)
+        let rowCounts = real.columns.map { $0.map { Int((Double($0.symbols.count) / Double(real.across)).rounded(.up)) }.reduce(0, +) }
+        XCTAssertEqual(rowCounts[0], rowCounts[1], "both columns use the full height")
+
+        // Wider: more across.
+        let wide = TradingFeeds.overviewPlan(width: 900, height: 618)
+        XCTAssertGreaterThan(wide.across, 3)
+        XCTAssertGreaterThan(tiles(wide).count, tiles(small).count)
+
+        for (plan, height) in [(small, 618.0), (tall, 900.0), (wide, 618.0)] {
+            XCTAssertEqual(Set(tiles(plan)).count, tiles(plan).count, "no stock twice")
+            // Neither column overflows the card.
+            for column in plan.columns {
+                let rows = column.map { Int((Double($0.symbols.count) / Double(plan.across)).rounded(.up)) }.reduce(0, +)
+                let used = Double(rows) * plan.tileHeight + Double(rows - column.count) * 4 + Double(column.count) * 26 - 8
+                XCTAssertLessThanOrEqual(used, height + 0.5)
+            }
+        }
+    }
+
+    func testOverviewBlocksSplitIntoBalancedColumns() {
+        // Semis takes three rows, the others two each.
+        let columns = TradingFeeds.balancedColumns(rows: [3, 2, 2, 2, 2, 2])
+        XCTAssertEqual(columns, [[0, 3, 5], [1, 2, 4]])
+        let heights = columns.map { $0.map { [3, 2, 2, 2, 2, 2][$0] }.reduce(0, +) }
+        XCTAssertLessThanOrEqual(abs(heights[0] - heights[1]), 1)
+    }
+
     func testEarningsAreParsedAndFilteredToRelevantNames() {
         let json = """
         {"data": {"rows": [

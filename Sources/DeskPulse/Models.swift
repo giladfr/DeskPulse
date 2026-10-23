@@ -47,7 +47,7 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .myNews: "My news"
         case .marketWire: "Market wire"
         case .financeTV: "Finance TV"
-        case .semis: "Semis heatmap"
+        case .semis: "Heatmap"
         case .marketCalendar: "Earnings & macro"
         case .liveTVAll: "Israeli TV"
         }

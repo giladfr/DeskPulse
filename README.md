@@ -57,7 +57,7 @@ the information I actually want in front of me.
 | WhatsApp | Weather + forecast (any city) | Rotter סקופים | YouTube Music |
 | World clocks (your cities) | Today | CNN World | Israeli TV: Kan 11, 12, 13, 14 |
 |  | Israel Red Alert | Fox News, My news | CNN Live |
-|  | Semis heatmap | Market wire | Finance TV (Bloomberg, Yahoo Finance, CNBC) |
+|  | Sector heatmap | Market wire | Finance TV (Bloomberg, Yahoo Finance, CNBC) |
 |  | Earnings & macro calendar |  |  |
 
 The stock card shows your watchlist as tiles, each with the price, the day's
@@ -78,9 +78,11 @@ watchlist every minute, newest first. Each headline is tagged with the symbols i
 mentions; click a tag for that symbol's chart. Filter to tech and semis, or to your
 watchlist. **Finance TV** plays Bloomberg or Yahoo Finance live from YouTube, or
 CNBC (NBCUniversal's free CNBC channel, which carries the US shows during US market
-hours), muted. **Semis heatmap** colours the 20 largest chip stocks, each with its
-company logo, by their move (the pre-market move before the open), with SOXX, SMH
-and risers versus fallers.
+hours), muted. **Heatmap** colours a sector's stocks, each with its company logo,
+by their move (the pre-market move before the open), with the sector's benchmark
+and risers versus fallers. Sectors: semis, hyperscalers, software, cybersecurity,
+AI infrastructure, the Mag 7, Israeli tech, or your watchlist; or a Tech overview
+with each sector's leaders in blocks on one screen.
 **Earnings & macro** lists this week's reports from your watchlist, semis and big
 tech (before the open or after the close, with the EPS estimate), plus US economic
 releases with forecast, previous and actual and a countdown to the next one.
