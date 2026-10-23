@@ -416,6 +416,45 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertFalse(sections[5].symbols.contains("CHKP"), "Check Point is already in cybersecurity")
     }
 
+    /// A bigger card shows more names, never smaller tiles; the starting card is
+    /// unchanged.
+    func testOverviewUsesSpareSpaceForMoreNames() {
+        func tiles(_ plan: TradingFeeds.OverviewPlan) -> [String] {
+            plan.columns.flatMap { $0.flatMap(\.symbols) }
+        }
+        // The card in layout 3: 592 x 618 points of content.
+        let small = TradingFeeds.overviewPlan(width: 592, height: 618)
+        XCTAssertEqual(small.across, 3)
+        XCTAssertGreaterThanOrEqual(small.tileHeight, 72)
+        XCTAssertGreaterThanOrEqual(tiles(small).count, 39)
+
+        // Taller: more rows, tiles no smaller.
+        let tall = TradingFeeds.overviewPlan(width: 592, height: 900)
+        XCTAssertGreaterThan(tiles(tall).count, tiles(small).count)
+        XCTAssertGreaterThanOrEqual(tall.tileHeight, 72)
+
+        // The real card is a little shorter (title bar): the shorter column sets the
+        // tile height and the other fills its spare row rather than leaving it empty.
+        let real = TradingFeeds.overviewPlan(width: 592, height: 582)
+        let rowCounts = real.columns.map { $0.map { Int((Double($0.symbols.count) / Double(real.across)).rounded(.up)) }.reduce(0, +) }
+        XCTAssertEqual(rowCounts[0], rowCounts[1], "both columns use the full height")
+
+        // Wider: more across.
+        let wide = TradingFeeds.overviewPlan(width: 900, height: 618)
+        XCTAssertGreaterThan(wide.across, 3)
+        XCTAssertGreaterThan(tiles(wide).count, tiles(small).count)
+
+        for (plan, height) in [(small, 618.0), (tall, 900.0), (wide, 618.0)] {
+            XCTAssertEqual(Set(tiles(plan)).count, tiles(plan).count, "no stock twice")
+            // Neither column overflows the card.
+            for column in plan.columns {
+                let rows = column.map { Int((Double($0.symbols.count) / Double(plan.across)).rounded(.up)) }.reduce(0, +)
+                let used = Double(rows) * plan.tileHeight + Double(rows - column.count) * 4 + Double(column.count) * 26 - 8
+                XCTAssertLessThanOrEqual(used, height + 0.5)
+            }
+        }
+    }
+
     func testOverviewBlocksSplitIntoBalancedColumns() {
         // Semis takes three rows, the others two each.
         let columns = TradingFeeds.balancedColumns(rows: [3, 2, 2, 2, 2, 2])

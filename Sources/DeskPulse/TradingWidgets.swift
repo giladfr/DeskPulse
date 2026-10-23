@@ -340,12 +340,16 @@ struct HeatmapWidget: View {
 
     private var category: TradingFeeds.HeatmapCategory {
         if isOverview {
-            let sections = TradingFeeds.overviewSections()
+            // Every name a block might show on a large card, so all have prices.
+            let sectors = TradingFeeds.overviewSectorIDs.compactMap { id in
+                TradingFeeds.heatmapCategories.first { $0.id == id }
+            }
+            var seen = Set<String>()
             return .init(
                 id: TradingFeeds.overviewCategoryID,
                 name: "Tech overview",
-                symbols: sections.flatMap(\.symbols),
-                benchmarks: sections.flatMap(\.category.benchmarks)
+                symbols: sectors.flatMap(\.symbols).filter { seen.insert($0).inserted },
+                benchmarks: sectors.flatMap(\.benchmarks)
             )
         }
         if categoryID == TradingFeeds.watchlistCategoryID {
@@ -397,29 +401,18 @@ struct HeatmapWidget: View {
         }
     }
 
-    /// Sector blocks in two balanced columns (one on a narrow card), tiles three or
-    /// more across, as tall as the card allows but never shorter than 48 points.
+    /// Sector blocks in two balanced columns (one on a narrow card), filling the card:
+    /// spare room shows more names per sector rather than bigger tiles.
     private func overview(premarket: Bool) -> some View {
-        let sections = TradingFeeds.overviewSections()
-        return GeometryReader { proxy in
-            let twoColumns = proxy.size.width >= 520
-            let columnWidth = twoColumns ? (proxy.size.width - 10) / 2 : proxy.size.width
-            let across = max(3, Int(columnWidth / 92))
-            let rows = sections.map { Int(ceil(Double($0.symbols.count) / Double(across))) }
-            let columns = twoColumns ? TradingFeeds.balancedColumns(rows: rows) : [Array(sections.indices)]
-            let headerHeight: CGFloat = 18, blockGap: CGFloat = 8, tileGap: CGFloat = 4
-            let tileHeight = columns.map { column -> CGFloat in
-                let rowCount = column.map { rows[$0] }.reduce(0, +)
-                let fixed = CGFloat(column.count) * (headerHeight + blockGap) - blockGap
-                    + CGFloat(rowCount - column.count) * tileGap
-                return (proxy.size.height - fixed) / CGFloat(max(rowCount, 1))
-            }.min().map { min(96, max(48, $0)) } ?? 60
+        GeometryReader { proxy in
+            let plan = TradingFeeds.overviewPlan(width: proxy.size.width, height: proxy.size.height)
+            let columnWidth = plan.columns.count > 1 ? (proxy.size.width - 10) / 2 : proxy.size.width
             ScrollView(.vertical, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 10) {
-                    ForEach(columns.indices, id: \.self) { column in
-                        VStack(spacing: blockGap) {
-                            ForEach(columns[column], id: \.self) { index in
-                                overviewBlock(sections[index], across: across, tileHeight: tileHeight, premarket: premarket)
+                    ForEach(plan.columns.indices, id: \.self) { column in
+                        VStack(spacing: 8) {
+                            ForEach(plan.columns[column], id: \.category.id) { section in
+                                overviewBlock(section, across: plan.across, tileHeight: plan.tileHeight, premarket: premarket)
                             }
                         }
                         .frame(width: columnWidth, alignment: .top)
@@ -525,12 +518,13 @@ struct HeatmapWidget: View {
                 }
             }
             Spacer(minLength: 4)
-            if !moves.isEmpty {
+            // The overview counts per block instead.
+            if !moves.isEmpty, !isOverview {
                 Text("▲\(up)").foregroundStyle(.green)
                 Text("▼\(down)").foregroundStyle(.red)
-                if premarket {
-                    Text("PRE-MARKET").foregroundStyle(.orange)
-                }
+            }
+            if !moves.isEmpty, premarket {
+                Text("PRE-MARKET").foregroundStyle(.orange)
             }
         }
         .font(.system(size: 9.5, weight: .bold, design: .rounded))

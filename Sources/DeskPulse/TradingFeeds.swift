@@ -198,20 +198,107 @@ enum TradingFeeds {
     /// Every sector's leaders at once, in blocks.
     static let overviewCategoryID = "overview"
 
-    /// The overview's blocks: each sector's first names, in order, skipping any
-    /// already shown in an earlier block (Oracle, Check Point).
-    static func overviewSections() -> [(category: HeatmapCategory, symbols: [String])] {
-        let picks: [(id: String, count: Int)] = [
-            ("semis", 9), ("hyperscalers", 6), ("software", 6),
-            ("cyber", 6), ("ai-infra", 6), ("israel", 6)
-        ]
+    typealias OverviewSection = (category: HeatmapCategory, symbols: [String])
+
+    /// The sectors in the overview, in order.
+    static let overviewSectorIDs = ["semis", "hyperscalers", "software", "cyber", "ai-infra", "israel"]
+
+    /// The overview's blocks with the default counts: semis 9, the others 6.
+    static func overviewSections() -> [OverviewSection] {
+        overviewSections(counts: Dictionary(uniqueKeysWithValues: overviewSectorIDs.map { ($0, $0 == "semis" ? 9 : 6) }))
+    }
+
+    /// Each sector's first names, in order, skipping any already shown in an earlier
+    /// block (Oracle, Check Point).
+    static func overviewSections(counts: [String: Int]) -> [OverviewSection] {
         var shown = Set<String>()
-        return picks.compactMap { pick in
-            guard let category = heatmapCategories.first(where: { $0.id == pick.id }) else { return nil }
-            let symbols = category.symbols.filter { !shown.contains($0) }.prefix(pick.count)
+        return overviewSectorIDs.compactMap { id in
+            guard let category = heatmapCategories.first(where: { $0.id == id }) else { return nil }
+            let symbols = category.symbols.filter { !shown.contains($0) }.prefix(counts[id] ?? 0)
             shown.formUnion(symbols)
             return (category, Array(symbols))
         }
+    }
+
+    struct OverviewPlan {
+        let across: Int
+        /// Blocks per column, top to bottom.
+        let columns: [[OverviewSection]]
+        let tileHeight: Double
+    }
+
+    /// Lays the overview out to use the card: tiles at least 92 points wide (three or
+    /// more across a block), blocks in two columns balanced by height, then extra rows
+    /// for sectors in a column with room left, as long as its tiles stay at least
+    /// `minimumTile` tall, or as tall as the other column already makes them, so a
+    /// bigger card shows more names rather than bigger tiles, with no empty rows.
+    static func overviewPlan(
+        width: Double,
+        height: Double,
+        minimumTile: Double = 72,
+        maximumTile: Double = 96
+    ) -> OverviewPlan {
+        let headerHeight = 18.0, blockGap = 8.0, tileGap = 4.0
+        let twoColumns = width >= 520
+        let columnWidth = twoColumns ? (width - 10) / 2 : width
+        let across = max(3, Int(columnWidth / 92))
+        var rows = Dictionary(uniqueKeysWithValues: overviewSectorIDs.map { ($0, $0 == "semis" ? 3 : 2) })
+
+        func sections() -> [OverviewSection] {
+            overviewSections(counts: rows.mapValues { $0 * across })
+        }
+        func usedRows(_ section: OverviewSection) -> Int {
+            Int((Double(section.symbols.count) / Double(across)).rounded(.up))
+        }
+        // Columns are chosen once, from the starting sizes, so blocks don't jump about.
+        let start = sections()
+        let assignment = twoColumns
+            ? balancedColumns(rows: start.map(usedRows))
+            : [Array(start.indices)]
+        func tileHeight(column: [Int], in current: [OverviewSection]) -> Double {
+            let rowCount = column.map { usedRows(current[$0]) }.reduce(0, +)
+            guard rowCount > 0 else { return maximumTile }
+            let fixed = Double(column.count) * (headerHeight + blockGap) - blockGap
+                + Double(rowCount - column.count) * tileGap
+            return (height - fixed) / Double(rowCount)
+        }
+
+        var grew = true
+        while grew {
+            grew = false
+            for column in assignment {
+                let current = sections()
+                // The block with the most names still unseen gets the next row.
+                let candidates = column.filter { index in
+                    let section = current[index]
+                    let shownElsewhere = Set(current.enumerated().filter { $0.offset != index }.flatMap(\.element.symbols))
+                    let available = section.category.symbols.filter { !shownElsewhere.contains($0) }.count
+                    return available > section.symbols.count
+                }
+                guard let index = candidates.max(by: {
+                    current[$0].category.symbols.count - current[$0].symbols.count
+                        < current[$1].category.symbols.count - current[$1].symbols.count
+                }) else { continue }
+                let id = current[index].category.id
+                // All tiles share one height: the shortest column's. Growing to that
+                // height costs nothing.
+                let shared = assignment.map { tileHeight(column: $0, in: current) }.min() ?? minimumTile
+                rows[id, default: 0] += 1
+                if tileHeight(column: column, in: sections()) >= min(minimumTile, shared) - 0.01 {
+                    grew = true
+                } else {
+                    rows[id, default: 1] -= 1
+                }
+            }
+        }
+
+        let final = sections()
+        let height = assignment.map { tileHeight(column: $0, in: final) }.min() ?? minimumTile
+        return OverviewPlan(
+            across: across,
+            columns: assignment.map { $0.map { final[$0] }.filter { !$0.symbols.isEmpty } },
+            tileHeight: min(maximumTile, max(48, height))
+        )
     }
 
     /// Splits blocks of the given row counts into two columns of similar height,
