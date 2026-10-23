@@ -38,7 +38,7 @@ struct WidgetContent: View {
         case .myNews: MyNewsWidget()
         case .marketWire: MarketWireWidget()
         case .financeTV: FinanceTVWidget()
-        case .semis: SemisHeatmapWidget()
+        case .semis: HeatmapWidget()
         case .marketCalendar: MarketCalendarWidget()
         case .liveTVAll: LiveTVHubWidget()
         }

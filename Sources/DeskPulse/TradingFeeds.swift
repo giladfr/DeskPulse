@@ -182,14 +182,49 @@ enum TradingFeeds {
         return id.count == 11 ? id : nil
     }
 
-    // MARK: Semiconductor heatmap
+    // MARK: Heatmap
 
-    /// Roughly by market value, so tiles keep their places from day to day.
+    struct HeatmapCategory: Identifiable, Hashable, Sendable {
+        let id: String
+        let name: String
+        /// Roughly by market value, so tiles keep their places from day to day.
+        let symbols: [String]
+        /// Shown as a percentage beside the category's name.
+        let benchmarks: [String]
+    }
+
+    /// The watchlist is a category too, filled from Settings.
+    static let watchlistCategoryID = "watchlist"
+
+    static let heatmapCategories: [HeatmapCategory] = [
+        .init(id: "semis", name: "Semis", symbols: semiconductorSymbols, benchmarks: ["SOXX", "SMH"]),
+        .init(id: "hyperscalers", name: "Hyperscalers", symbols: [
+            "MSFT", "AMZN", "GOOGL", "META", "ORCL", "IBM", "BABA", "CRWV", "NBIS", "EQIX", "DLR"
+        ], benchmarks: ["QQQ"]),
+        .init(id: "software", name: "Software", symbols: [
+            "ORCL", "SAP", "CRM", "PLTR", "NOW", "INTU", "ADBE", "APP", "SHOP", "SNPS",
+            "CDNS", "ADSK", "WDAY", "SNOW", "DDOG", "TEAM", "MDB", "HUBS"
+        ], benchmarks: ["IGV"]),
+        .init(id: "cyber", name: "Cybersecurity", symbols: [
+            "PANW", "CRWD", "FTNT", "NET", "ZS", "CHKP", "AKAM", "OKTA", "QLYS", "TENB", "S", "RPD"
+        ], benchmarks: ["CIBR"]),
+        .init(id: "ai-infra", name: "AI infrastructure", symbols: [
+            "CSCO", "ANET", "DELL", "GLW", "VRT", "CLS", "HPE", "COHR", "CIEN", "LITE",
+            "SMCI", "CRDO", "ALAB", "NTAP"
+        ], benchmarks: []),
+        .init(id: "mag7", name: "Mag 7", symbols: [
+            "NVDA", "MSFT", "AAPL", "GOOGL", "AMZN", "META", "TSLA"
+        ], benchmarks: ["MAGS", "QQQ"]),
+        .init(id: "israel", name: "Israeli tech", symbols: [
+            "CHKP", "TSEM", "NVMI", "ESLT", "MNDY", "NICE", "CAMT", "WIX", "CLBT", "GLBE",
+            "FVRR", "RDWR", "SEDG"
+        ], benchmarks: ["^TA125.TA"])
+    ]
+
     static let semiconductorSymbols = [
         "NVDA", "AVGO", "TSM", "AMD", "ASML", "QCOM", "ARM", "AMAT", "MU", "LRCX",
         "KLAC", "INTC", "TXN", "ADI", "MRVL", "SMCI", "NXPI", "MPWR", "ON", "MCHP"
     ]
-    static let semiconductorBenchmarks = ["SOXX", "SMH"]
 
     // MARK: Earnings
 

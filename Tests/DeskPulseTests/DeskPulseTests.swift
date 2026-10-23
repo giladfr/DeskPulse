@@ -390,6 +390,21 @@ final class DeskPulseTests: XCTestCase {
         ))
     }
 
+    func testHeatmapCategoriesAreWellFormed() {
+        let categories = TradingFeeds.heatmapCategories
+        XCTAssertEqual(Set(categories.map(\.id)).count, categories.count, "unique IDs")
+        XCTAssertFalse(categories.contains { $0.id == TradingFeeds.watchlistCategoryID })
+        XCTAssertEqual(categories.first?.symbols, TradingFeeds.semiconductorSymbols, "semis first, as before")
+        for category in categories {
+            XCTAssertFalse(category.symbols.isEmpty, category.name)
+            XCTAssertLessThanOrEqual(category.symbols.count, 20, "\(category.name): tiles stay at least as large as the semis'")
+            XCTAssertEqual(Set(category.symbols).count, category.symbols.count, "\(category.name): no repeats")
+            for symbol in category.symbols + category.benchmarks {
+                XCTAssertEqual(WatchedSymbol.normalized(symbol), symbol, "\(category.name): \(symbol)")
+            }
+        }
+    }
+
     func testEarningsAreParsedAndFilteredToRelevantNames() {
         let json = """
         {"data": {"rows": [

@@ -314,46 +314,63 @@ final class HeatmapModel: ObservableObject {
     @Published private(set) var quotes: [String: MarketQuote] = [:]
     @Published private(set) var failed = false
 
-    static let symbols = TradingFeeds.semiconductorBenchmarks + TradingFeeds.semiconductorSymbols
-
-    func run() async {
+    /// The shown category's symbols every 30 seconds; quotes from other categories
+    /// stay, so switching back shows numbers at once.
+    func run(symbols: [String]) async {
         while !Task.isCancelled {
-            let result = await MarketData.fetchQuotes(Self.symbols.map { WatchedSymbol(symbol: $0) })
+            let result = await MarketData.fetchQuotes(symbols.map { WatchedSymbol(symbol: $0) })
             quotes.merge(result.quotes, uniquingKeysWith: { _, new in new })
-            failed = quotes.isEmpty
+            failed = symbols.allSatisfy { quotes[$0] == nil }
             try? await Task.sleep(for: .seconds(30))
         }
     }
 }
 
-/// The biggest chip stocks coloured by their move, with SOXX and SMH and a count of
-/// risers and fallers. Before the open the colour is the pre-market move.
-struct SemisHeatmapWidget: View {
+/// A sector at a glance: semis, hyperscalers, software, cybersecurity, AI
+/// infrastructure, the Mag 7, Israeli tech or the watchlist, each stock coloured by
+/// its move, with the sector's benchmarks and a count of risers and fallers. Before
+/// the open the colour is the pre-market move.
+struct HeatmapWidget: View {
     @EnvironmentObject private var dashboard: DashboardModel
     @EnvironmentObject private var settings: AppSettings
     @StateObject private var model = HeatmapModel()
+    @AppStorage("heatmap.category") private var categoryID = "semis"
+
+    private var category: TradingFeeds.HeatmapCategory {
+        if categoryID == TradingFeeds.watchlistCategoryID {
+            return .init(
+                id: TradingFeeds.watchlistCategoryID,
+                name: "Watchlist",
+                symbols: settings.watchlist.map(\.symbol),
+                benchmarks: []
+            )
+        }
+        return TradingFeeds.heatmapCategories.first { $0.id == categoryID } ?? TradingFeeds.heatmapCategories[0]
+    }
 
     var body: some View {
+        let category = category
         TimelineView(.periodic(from: .now, by: 60)) { context in
             let premarket = DataService.tradingSession(at: context.date) == .premarket
                 && !DataService.isMarketWeekend(context.date)
             VStack(spacing: 6) {
-                summary(premarket: premarket)
-                if model.quotes.isEmpty {
+                summary(category, premarket: premarket)
+                if category.symbols.allSatisfy({ model.quotes[$0] == nil }) {
                     if model.failed {
                         Text("Couldn't load quotes.").font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        LoadingState(label: "Loading chip stocks…")
+                        LoadingState(label: "Loading \(category.name.lowercased())…")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
                     GeometryReader { proxy in
                         let columns = max(2, Int(proxy.size.width / 78))
-                        let rows = Int(ceil(Double(TradingFeeds.semiconductorSymbols.count) / Double(columns)))
-                        let height = max(34, (proxy.size.height - CGFloat(rows - 1) * 4) / CGFloat(rows))
+                        let rows = max(1, Int(ceil(Double(category.symbols.count) / Double(columns))))
+                        // Tiles fill the card, but a short list doesn't make giant ones.
+                        let height = min(96, max(34, (proxy.size.height - CGFloat(rows - 1) * 4) / CGFloat(rows)))
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: columns), spacing: 4) {
-                            ForEach(TradingFeeds.semiconductorSymbols, id: \.self) { symbol in
+                            ForEach(category.symbols, id: \.self) { symbol in
                                 tile(symbol, premarket: premarket, height: height)
                             }
                         }
@@ -362,7 +379,35 @@ struct SemisHeatmapWidget: View {
             }
             .padding(8)
         }
-        .task { await model.run() }
+        .task(id: category.symbols + category.benchmarks) {
+            await model.run(symbols: category.benchmarks + category.symbols)
+        }
+    }
+
+    private var categoryMenu: some View {
+        Menu {
+            ForEach(TradingFeeds.heatmapCategories) { option in
+                Button(option.name) { categoryID = option.id }
+            }
+            Divider()
+            Button("My watchlist") { categoryID = TradingFeeds.watchlistCategoryID }
+        } label: {
+            HStack(spacing: 3) {
+                Text(category.name.uppercased())
+                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .tracking(0.5)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .heavy))
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Color.white.opacity(0.08), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Choose a sector")
     }
 
     /// The move the tile is coloured by, and what it is.
@@ -373,16 +418,17 @@ struct SemisHeatmapWidget: View {
         return (quote.dayChangePercent, nil)
     }
 
-    private func summary(premarket: Bool) -> some View {
-        let moves = TradingFeeds.semiconductorSymbols.compactMap { model.quotes[$0] }.map { move($0, premarket: premarket).percent }
+    private func summary(_ category: TradingFeeds.HeatmapCategory, premarket: Bool) -> some View {
+        let moves = category.symbols.compactMap { model.quotes[$0] }.map { move($0, premarket: premarket).percent }
         let up = moves.filter { $0 > 0 }.count
         let down = moves.filter { $0 < 0 }.count
         return HStack(spacing: 10) {
-            ForEach(TradingFeeds.semiconductorBenchmarks, id: \.self) { symbol in
+            categoryMenu
+            ForEach(category.benchmarks, id: \.self) { symbol in
                 if let quote = model.quotes[symbol] {
                     let value = move(quote, premarket: premarket)
                     HStack(spacing: 4) {
-                        Text(symbol).font(.system(size: 10, weight: .heavy, design: .rounded))
+                        Text(PriceText.shortName(symbol)).font(.system(size: 10, weight: .heavy, design: .rounded))
                         Text(PriceText.percent(value.percent))
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .foregroundStyle(value.percent >= 0 ? .green : .red)
