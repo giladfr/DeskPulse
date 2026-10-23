@@ -334,9 +334,20 @@ struct HeatmapWidget: View {
     @EnvironmentObject private var dashboard: DashboardModel
     @EnvironmentObject private var settings: AppSettings
     @StateObject private var model = HeatmapModel()
-    @AppStorage("heatmap.category") private var categoryID = "semis"
+    @AppStorage("heatmap.category") private var categoryID = TradingFeeds.overviewCategoryID
+
+    private var isOverview: Bool { categoryID == TradingFeeds.overviewCategoryID }
 
     private var category: TradingFeeds.HeatmapCategory {
+        if isOverview {
+            let sections = TradingFeeds.overviewSections()
+            return .init(
+                id: TradingFeeds.overviewCategoryID,
+                name: "Tech overview",
+                symbols: sections.flatMap(\.symbols),
+                benchmarks: sections.flatMap(\.category.benchmarks)
+            )
+        }
         if categoryID == TradingFeeds.watchlistCategoryID {
             return .init(
                 id: TradingFeeds.watchlistCategoryID,
@@ -363,6 +374,8 @@ struct HeatmapWidget: View {
                         LoadingState(label: "Loading \(category.name.lowercased())…")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                } else if isOverview {
+                    overview(premarket: premarket)
                 } else {
                     GeometryReader { proxy in
                         let columns = max(2, Int(proxy.size.width / 78))
@@ -384,8 +397,83 @@ struct HeatmapWidget: View {
         }
     }
 
+    /// Sector blocks in two balanced columns (one on a narrow card), tiles three or
+    /// more across, as tall as the card allows but never shorter than 48 points.
+    private func overview(premarket: Bool) -> some View {
+        let sections = TradingFeeds.overviewSections()
+        return GeometryReader { proxy in
+            let twoColumns = proxy.size.width >= 520
+            let columnWidth = twoColumns ? (proxy.size.width - 10) / 2 : proxy.size.width
+            let across = max(3, Int(columnWidth / 92))
+            let rows = sections.map { Int(ceil(Double($0.symbols.count) / Double(across))) }
+            let columns = twoColumns ? TradingFeeds.balancedColumns(rows: rows) : [Array(sections.indices)]
+            let headerHeight: CGFloat = 18, blockGap: CGFloat = 8, tileGap: CGFloat = 4
+            let tileHeight = columns.map { column -> CGFloat in
+                let rowCount = column.map { rows[$0] }.reduce(0, +)
+                let fixed = CGFloat(column.count) * (headerHeight + blockGap) - blockGap
+                    + CGFloat(rowCount - column.count) * tileGap
+                return (proxy.size.height - fixed) / CGFloat(max(rowCount, 1))
+            }.min().map { min(96, max(48, $0)) } ?? 60
+            ScrollView(.vertical, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(columns.indices, id: \.self) { column in
+                        VStack(spacing: blockGap) {
+                            ForEach(columns[column], id: \.self) { index in
+                                overviewBlock(sections[index], across: across, tileHeight: tileHeight, premarket: premarket)
+                            }
+                        }
+                        .frame(width: columnWidth, alignment: .top)
+                    }
+                }
+            }
+        }
+    }
+
+    private func overviewBlock(
+        _ section: (category: TradingFeeds.HeatmapCategory, symbols: [String]),
+        across: Int,
+        tileHeight: CGFloat,
+        premarket: Bool
+    ) -> some View {
+        let moves = section.symbols.compactMap { model.quotes[$0] }.map { move($0, premarket: premarket).percent }
+        return VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Button { categoryID = section.category.id } label: {
+                    Text(section.category.name.uppercased())
+                        .font(.system(size: 9.5, weight: .heavy, design: .rounded))
+                        .tracking(0.5)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show all of \(section.category.name)")
+                ForEach(section.category.benchmarks.prefix(1), id: \.self) { symbol in
+                    if let quote = model.quotes[symbol] {
+                        let value = move(quote, premarket: premarket)
+                        Text("\(PriceText.shortName(symbol)) \(PriceText.percent(value.percent))")
+                            .foregroundStyle(value.percent >= 0 ? .green : .red)
+                    }
+                }
+                Spacer(minLength: 2)
+                if !moves.isEmpty {
+                    Text("▲\(moves.filter { $0 > 0 }.count)").foregroundStyle(.green)
+                    Text("▼\(moves.filter { $0 < 0 }.count)").foregroundStyle(.red)
+                }
+            }
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .frame(height: 14)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: across), spacing: 4) {
+                ForEach(section.symbols, id: \.self) { symbol in
+                    tile(symbol, premarket: premarket, height: tileHeight)
+                }
+            }
+        }
+    }
+
     private var categoryMenu: some View {
         Menu {
+            Button("Tech overview") { categoryID = TradingFeeds.overviewCategoryID }
+            Divider()
             ForEach(TradingFeeds.heatmapCategories) { option in
                 Button(option.name) { categoryID = option.id }
             }
@@ -424,7 +512,7 @@ struct HeatmapWidget: View {
         let down = moves.filter { $0 < 0 }.count
         return HStack(spacing: 10) {
             categoryMenu
-            ForEach(category.benchmarks, id: \.self) { symbol in
+            ForEach(isOverview ? [] : category.benchmarks, id: \.self) { symbol in
                 if let quote = model.quotes[symbol] {
                     let value = move(quote, premarket: premarket)
                     HStack(spacing: 4) {

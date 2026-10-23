@@ -81,7 +81,8 @@ CNBC (NBCUniversal's free CNBC channel, which carries the US shows during US mar
 hours), muted. **Heatmap** colours a sector's stocks, each with its company logo,
 by their move (the pre-market move before the open), with the sector's benchmark
 and risers versus fallers. Sectors: semis, hyperscalers, software, cybersecurity,
-AI infrastructure, the Mag 7, Israeli tech, or your watchlist.
+AI infrastructure, the Mag 7, Israeli tech, or your watchlist; or a Tech overview
+with each sector's leaders in blocks on one screen.
 **Earnings & macro** lists this week's reports from your watchlist, semis and big
 tech (before the open or after the close, with the EPS estimate), plus US economic
 releases with forecast, previous and actual and a countdown to the next one.

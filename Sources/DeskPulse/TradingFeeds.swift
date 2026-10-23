@@ -195,11 +195,42 @@ enum TradingFeeds {
 
     /// The watchlist is a category too, filled from Settings.
     static let watchlistCategoryID = "watchlist"
+    /// Every sector's leaders at once, in blocks.
+    static let overviewCategoryID = "overview"
+
+    /// The overview's blocks: each sector's first names, in order, skipping any
+    /// already shown in an earlier block (Oracle, Check Point).
+    static func overviewSections() -> [(category: HeatmapCategory, symbols: [String])] {
+        let picks: [(id: String, count: Int)] = [
+            ("semis", 9), ("hyperscalers", 6), ("software", 6),
+            ("cyber", 6), ("ai-infra", 6), ("israel", 6)
+        ]
+        var shown = Set<String>()
+        return picks.compactMap { pick in
+            guard let category = heatmapCategories.first(where: { $0.id == pick.id }) else { return nil }
+            let symbols = category.symbols.filter { !shown.contains($0) }.prefix(pick.count)
+            shown.formUnion(symbols)
+            return (category, Array(symbols))
+        }
+    }
+
+    /// Splits blocks of the given row counts into two columns of similar height,
+    /// keeping their order within each column; returns the block indices per column.
+    static func balancedColumns(rows: [Int]) -> [[Int]] {
+        var columns: [[Int]] = [[], []]
+        var heights = [0, 0]
+        for (index, count) in rows.enumerated() {
+            let target = heights[0] <= heights[1] ? 0 : 1
+            columns[target].append(index)
+            heights[target] += count
+        }
+        return columns
+    }
 
     static let heatmapCategories: [HeatmapCategory] = [
         .init(id: "semis", name: "Semis", symbols: semiconductorSymbols, benchmarks: ["SOXX", "SMH"]),
         .init(id: "hyperscalers", name: "Hyperscalers", symbols: [
-            "MSFT", "AMZN", "GOOGL", "META", "ORCL", "IBM", "BABA", "CRWV", "NBIS", "EQIX", "DLR"
+            "MSFT", "AMZN", "GOOGL", "META", "ORCL", "CRWV", "NBIS", "IBM", "BABA", "EQIX", "DLR"
         ], benchmarks: ["QQQ"]),
         .init(id: "software", name: "Software", symbols: [
             "ORCL", "SAP", "CRM", "PLTR", "NOW", "INTU", "ADBE", "APP", "SHOP", "SNPS",

@@ -405,6 +405,25 @@ final class DeskPulseTests: XCTestCase {
         }
     }
 
+    func testTechOverviewShowsEachSectorsLeadersOnce() {
+        let sections = TradingFeeds.overviewSections()
+        XCTAssertEqual(sections.map(\.category.id), ["semis", "hyperscalers", "software", "cyber", "ai-infra", "israel"])
+        let all = sections.flatMap(\.symbols)
+        XCTAssertEqual(Set(all).count, all.count, "no stock twice")
+        XCTAssertEqual(sections.first?.symbols.count, 9)
+        XCTAssertTrue(sections.dropFirst().allSatisfy { $0.symbols.count == 6 })
+        XCTAssertFalse(sections[2].symbols.contains("ORCL"), "Oracle is already among the hyperscalers")
+        XCTAssertFalse(sections[5].symbols.contains("CHKP"), "Check Point is already in cybersecurity")
+    }
+
+    func testOverviewBlocksSplitIntoBalancedColumns() {
+        // Semis takes three rows, the others two each.
+        let columns = TradingFeeds.balancedColumns(rows: [3, 2, 2, 2, 2, 2])
+        XCTAssertEqual(columns, [[0, 3, 5], [1, 2, 4]])
+        let heights = columns.map { $0.map { [3, 2, 2, 2, 2, 2][$0] }.reduce(0, +) }
+        XCTAssertLessThanOrEqual(abs(heights[0] - heights[1]), 1)
+    }
+
     func testEarningsAreParsedAndFilteredToRelevantNames() {
         let json = """
         {"data": {"rows": [
