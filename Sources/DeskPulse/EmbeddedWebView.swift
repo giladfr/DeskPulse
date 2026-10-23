@@ -5,13 +5,32 @@ import SwiftUI
 struct EmbeddedWebView: NSViewRepresentable {
     enum Source: Equatable {
         case url(URL)
-        case html(String)
+        /// Generated HTML. Pages that embed players needing a referrer (YouTube) give
+        /// it a web origin.
+        case html(String, baseURL: URL? = nil)
     }
 
     let source: Source
     var allowedHosts: Set<String> = []
     var pageZoom: Double = 0.82
     var userScript: String?
+    /// Mutes each video or audio element when it first plays, in every frame (players
+    /// are often cross-origin iframes). The player's own controls can unmute it.
+    var startsMuted = false
+
+    static let muteOnFirstPlayScript = """
+    (() => {
+      const muteOnce = (media) => {
+        if (media.dataset.deskpulseMuted) return;
+        media.dataset.deskpulseMuted = '1';
+        media.muted = true;
+      };
+      document.addEventListener('play', (event) => {
+        if (event.target instanceof HTMLMediaElement) muteOnce(event.target);
+      }, true);
+      document.querySelectorAll('video, audio').forEach(muteOnce);
+    })();
+    """
 
     func makeCoordinator() -> Coordinator {
         Coordinator(allowedHosts: allowedHosts)
@@ -30,6 +49,13 @@ struct EmbeddedWebView: NSViewRepresentable {
                 forMainFrameOnly: true
             ))
         }
+        if startsMuted {
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: Self.muteOnFirstPlayScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            ))
+        }
 
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
@@ -41,6 +67,17 @@ struct EmbeddedWebView: NSViewRepresentable {
         load(source, in: view)
         context.coordinator.loadedSource = source
         return view
+    }
+
+    /// Closing a card or switching channel must silence it at once. Releasing the view
+    /// is not enough: its web process can keep playing until it is torn down.
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        view.pauseAllMediaPlayback(completionHandler: nil)
+        view.stopLoading()
+        view.loadHTMLString("", baseURL: nil)
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
+        coordinator.loadedSource = nil
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
@@ -55,8 +92,8 @@ struct EmbeddedWebView: NSViewRepresentable {
         switch source {
         case .url(let url):
             view.load(URLRequest(url: url))
-        case .html(let html):
-            view.loadHTMLString(html, baseURL: nil)
+        case .html(let html, let baseURL):
+            view.loadHTMLString(html, baseURL: baseURL)
         }
     }
 
@@ -99,7 +136,7 @@ struct EmbeddedWebView: NSViewRepresentable {
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             switch loadedSource {
             // Generated players (live TV) are rebuilt; their URL is about:blank.
-            case .html(let html): webView.loadHTMLString(html, baseURL: nil)
+            case .html(let html, let baseURL): webView.loadHTMLString(html, baseURL: baseURL)
             // Sites reload where the user was, e.g. an open Gmail thread.
             case .url(let url):
                 if webView.url == nil {

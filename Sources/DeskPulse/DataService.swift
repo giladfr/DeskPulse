@@ -290,7 +290,7 @@ enum DataService {
     }
 
     static func fetchLiveTVPlayerSource(channel: String) async -> LiveTVPlayerSource? {
-        guard ["11", "12", "13", "cnn"].contains(channel) else { return nil }
+        guard ["11", "12", "13", "14", "cnn"].contains(channel) else { return nil }
         let pageURL = URL(string: "https://gurutv.online/ch\(channel).html")!
         guard let (data, _) = try? await session.data(from: pageURL),
               let html = String(data: data, encoding: .utf8)

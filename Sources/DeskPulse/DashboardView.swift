@@ -182,7 +182,7 @@ struct DashboardView: View {
             }
             Spacer()
             HStack(spacing: 5) {
-                ForEach(WidgetKind.allCases.filter { !settings.hiddenFromTopBar.contains($0) }) { kind in
+                ForEach(WidgetKind.available.filter { !settings.hiddenFromTopBar.contains($0) }) { kind in
                     Button {
                         model.toggleVisibility(kind)
                     } label: {
