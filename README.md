@@ -55,8 +55,10 @@ the information I actually want in front of me.
 | --- | --- | --- | --- |
 | Gmail | Markets: watchlist, charts, portfolio | Ynet | Israeli radio |
 | WhatsApp | Weather + forecast (any city) | Rotter סקופים | YouTube Music |
-| World clocks (your cities) | Today | CNN World | Channels 11, 12, 13 |
+| World clocks (your cities) | Today | CNN World | Israeli TV: Kan 11, 12, 13, 14 |
 |  | Israel Red Alert | Fox News, My news | CNN Live |
+|  | Semis heatmap | Market wire | Finance TV (Bloomberg, Yahoo Finance, CNBC) |
+|  | Earnings & macro calendar |  |  |
 
 The stock card shows your watchlist as tiles, each with the price, the day's
 change, a sparkline and any pre-market or after-hours move (a compact ticker on a
@@ -68,7 +70,28 @@ day and 52-week ranges and volume. Search by name or symbol to add US and Tel
 Aviv stocks and ETFs, indexes, currencies, crypto and futures. Add your shares
 and average cost to see a portfolio line with the day's and total gain in dollars
 and shekels. Prices come from Yahoo Finance's public chart API, with Nasdaq as
-the fallback for US symbols; both are unofficial. **My news**
+the fallback for US symbols; both are unofficial.
+
+For trading days there are four more cards. **Market wire** merges Bloomberg,
+CNBC, WSJ, MarketWatch, FT, Seeking Alpha, EE Times and Yahoo's headlines for your
+watchlist every minute, newest first. Each headline is tagged with the symbols it
+mentions; click a tag for that symbol's chart. Filter to tech and semis, or to your
+watchlist. **Finance TV** plays Bloomberg or Yahoo Finance live from YouTube, or
+CNBC (NBCUniversal's free CNBC channel, which carries the US shows during US market
+hours), muted. **Semis heatmap** colours the 20 largest chip stocks, each with its
+company logo, by their move (the pre-market move before the open), with SOXX, SMH
+and risers versus fallers.
+**Earnings & macro** lists this week's reports from your watchlist, semis and big
+tech (before the open or after the close, with the EPS estimate), plus US economic
+releases with forecast, previous and actual and a countdown to the next one.
+
+**Israeli TV** shows Kan 11 or Channels 12, 13 or 14 with sound, or all of them at
+once in a split screen fitted to the card (muted; unmute one in its player). Streams
+that stall reconnect by themselves, and closing a card or switching channel stops
+its video and sound at once. Channel 13 only streams to viewers in Israel, so
+elsewhere its tile says so. CNN Live remains a card of its own.
+
+**My news**
 merges the sources you choose, newest first, with a filter per source. The radio
 card supports station switching from the keyboard media controls and optional
 local song recognition with prominent album art.

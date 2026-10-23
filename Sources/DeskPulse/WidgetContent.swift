@@ -36,6 +36,11 @@ struct WidgetContent: View {
         case .liveTVCNN: LiveTVWidget(channel: "cnn", label: "CNN")
         case .radio: RadioWidget()
         case .myNews: MyNewsWidget()
+        case .marketWire: MarketWireWidget()
+        case .financeTV: FinanceTVWidget()
+        case .semis: SemisHeatmapWidget()
+        case .marketCalendar: MarketCalendarWidget()
+        case .liveTVAll: LiveTVHubWidget()
         }
     }
 }
@@ -478,9 +483,131 @@ extension String {
     }
 }
 
-private struct LiveTVWidget: View {
+/// Israeli TV in one card: one channel with sound, or all of them tiled to fit the
+/// card, muted until you unmute one in its player.
+struct LiveTVHubWidget: View {
+    static let channels: [(id: String, label: String)] = [
+        ("11", "Kan 11"), ("12", "Channel 12"), ("13", "Channel 13"), ("14", "Channel 14")
+    ]
+
+    @AppStorage("liveTV.channel") private var channel = "12"
+    @AppStorage("liveTV.split") private var split = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 5) {
+                ForEach(Self.channels, id: \.id) { option in
+                    chip(option.label, selected: !split && channel == option.id) {
+                        channel = option.id
+                        split = false
+                    }
+                }
+                Spacer(minLength: 4)
+                chip("All", systemImage: "square.grid.2x2.fill", selected: split) { split = true }
+                    .help("Split screen: every channel at once, muted (unmute one in its player)")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            Group {
+                if split {
+                    splitScreen
+                } else {
+                    let selected = Self.channels.first { $0.id == channel } ?? Self.channels[1]
+                    // A new identity per channel, so the previous one is torn down.
+                    LiveTVWidget(channel: selected.id, label: selected.label, muted: false)
+                        .id(selected.id)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+        }
+    }
+
+    private var splitScreen: some View {
+        GeometryReader { proxy in
+            let gap: CGFloat = 4
+            let grid = Self.bestGrid(count: Self.channels.count, in: proxy.size, gap: gap)
+            let width = (proxy.size.width - CGFloat(grid.columns - 1) * gap) / CGFloat(grid.columns)
+            let height = (proxy.size.height - CGFloat(grid.rows - 1) * gap) / CGFloat(grid.rows)
+            VStack(spacing: gap) {
+                ForEach(0..<grid.rows, id: \.self) { row in
+                    HStack(spacing: gap) {
+                        ForEach(0..<grid.columns, id: \.self) { column in
+                            let index = row * grid.columns + column
+                            if index < Self.channels.count {
+                                cell(Self.channels[index])
+                                    .frame(width: width, height: height)
+                            } else {
+                                Color.clear.frame(width: width, height: height)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func cell(_ option: (id: String, label: String)) -> some View {
+        LiveTVWidget(channel: option.id, label: option.label, muted: true)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(alignment: .topLeading) {
+                Button {
+                    channel = option.id
+                    split = false
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(option.label)
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.65), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(5)
+                .help("Show \(option.label) alone, with sound")
+            }
+    }
+
+    /// The rows and columns that make 16:9 pictures as large as possible: four across
+    /// on a wide strip, two by two on a squarer card, one column on a tall one.
+    static func bestGrid(count: Int, in size: CGSize, gap: CGFloat) -> (columns: Int, rows: Int) {
+        var best = (columns: 1, rows: count)
+        var bestWidth: CGFloat = 0
+        for columns in 1...max(count, 1) {
+            let rows = Int((Double(count) / Double(columns)).rounded(.up))
+            let cellWidth = (size.width - CGFloat(columns - 1) * gap) / CGFloat(columns)
+            let cellHeight = (size.height - CGFloat(rows - 1) * gap) / CGFloat(rows)
+            let pictureWidth = min(cellWidth, cellHeight * 16 / 9)
+            if pictureWidth > bestWidth + 0.5 {
+                bestWidth = pictureWidth
+                best = (columns, rows)
+            }
+        }
+        return best
+    }
+
+    private func chip(_ title: String, systemImage: String? = nil, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let systemImage { Image(systemName: systemImage) }
+                Text(title)
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(selected ? Color.blue.opacity(0.4) : Color.white.opacity(0.06), in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct LiveTVWidget: View {
     let channel: String
     let label: String
+    /// Start without sound (several players at once); the player's controls unmute.
+    var muted = true
     @State private var playerSource: LiveTVPlayerSource?
     @State private var lookupFailed = false
     @State private var attempt = 0
@@ -492,12 +619,13 @@ private struct LiveTVWidget: View {
                 case .web(let url):
                     EmbeddedWebView(
                         source: .url(url),
-                        allowedHosts: ["mako.co.il"],
-                        pageZoom: 1
+                        allowedHosts: ["mako.co.il", "univtec.com"],
+                        pageZoom: 1,
+                        startsMuted: muted
                     )
                 case .hls(let url):
                     EmbeddedWebView(
-                        source: .html(Self.hlsPlayerHTML(url: url)),
+                        source: .html(Self.hlsPlayerHTML(url: url, label: label, muted: muted)),
                         allowedHosts: [],
                         pageZoom: 1
                     )
@@ -513,7 +641,7 @@ private struct LiveTVWidget: View {
         }
         .id(channel)
         // Retry tapped: start over at once instead of waiting out the 30 seconds.
-        .task(id: attempt) {
+        .task(id: "\(channel)|\(attempt)") {
             while playerSource == nil, !Task.isCancelled {
                 if let source = await DataService.fetchLiveTVPlayerSource(channel: channel) {
                     playerSource = source
@@ -526,7 +654,10 @@ private struct LiveTVWidget: View {
         }
     }
 
-    private static func hlsPlayerHTML(url: URL) -> String {
+    /// A plain video player for an HLS stream (WebKit plays HLS natively). A watchdog
+    /// reloads the stream when it stalls or fails, and says so when it keeps failing,
+    /// e.g. a channel only available in Israel.
+    static func hlsPlayerHTML(url: URL, label: String, muted: Bool) -> String {
         """
         <!doctype html>
         <html>
@@ -537,15 +668,38 @@ private struct LiveTVWidget: View {
             * { box-sizing: border-box; }
             html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
             video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+            #status { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+                      text-align: center; padding: 16px; color: #aaa; font: 12px -apple-system, sans-serif; }
           </style>
         </head>
         <body>
-          <video src="\(url.absoluteString)" controls autoplay muted playsinline></video>
+          <video controls autoplay playsinline \(muted ? "muted" : "")></video>
+          <div id="status"></div>
           <script>
+            const source = "\(url.absoluteString)";
             const video = document.querySelector('video');
-            video.muted = true;
-            video.defaultMuted = true;
-            video.play().catch(() => {});
+            const status = document.getElementById('status');
+            video.muted = \(muted ? "true" : "false");
+            let failures = 0, lastTime = -1, stuckSince = Date.now();
+            const show = (text) => { status.textContent = text; status.style.display = text ? 'flex' : 'none'; };
+            const start = () => { video.src = source; video.play().catch(() => {}); };
+            video.addEventListener('playing', () => { failures = 0; video.controls = true; show(''); });
+            video.addEventListener('error', () => {
+              failures += 1;
+              // A player that keeps failing hides its controls so the message shows.
+              video.controls = failures < 3;
+              show(failures >= 3
+                ? "\(label) isn't playing. The stream may be limited to viewers in Israel. Retrying every 30 seconds."
+                : "Reconnecting to \(label)…");
+              setTimeout(start, failures >= 3 ? 30000 : 4000);
+            });
+            // A live stream that stops moving for 20 seconds is reloaded.
+            setInterval(() => {
+              if (video.paused || video.error) { stuckSince = Date.now(); return; }
+              if (video.currentTime !== lastTime) { lastTime = video.currentTime; stuckSince = Date.now(); return; }
+              if (Date.now() - stuckSince > 20000) { stuckSince = Date.now(); show('Reconnecting to \(label)…'); start(); }
+            }, 5000);
+            start();
           </script>
         </body>
         </html>

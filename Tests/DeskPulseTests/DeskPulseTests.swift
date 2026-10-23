@@ -1,3 +1,4 @@
+import JavaScriptCore
 import XCTest
 @testable import DeskPulse
 
@@ -11,9 +12,10 @@ final class DeskPulseTests: XCTestCase {
         let kinds = Set(DashboardModel.defaultWidgets.map(\.kind))
         XCTAssertEqual(kinds, [
             .gmail, .stocks, .clocks, .date, .weather,
-            .ynet, .rotter, .whatsapp, .youtubeMusic, .liveTV, .radio
+            .ynet, .rotter, .whatsapp, .youtubeMusic, .liveTVAll, .radio
         ])
-        XCTAssertTrue(Set(WidgetKind.allCases).isSuperset(of: kinds))
+        XCTAssertTrue(Set(WidgetKind.available).isSuperset(of: kinds))
+        XCTAssertFalse(WidgetKind.available.contains(.liveTV11), "retired cards can't be added")
     }
 
     func testFeedTitlesDecodeDoubleEncodedHebrewPunctuation() {
@@ -335,6 +337,104 @@ final class DeskPulseTests: XCTestCase {
     func testAlertLevelsComeFromPriceAlerts() {
         XCTAssertEqual(PriceAlert(symbol: "A", condition: .above(150)).priceLevel, 150)
         XCTAssertNil(PriceAlert(symbol: "A", condition: .dailyMove(3)).priceLevel)
+    }
+
+    // MARK: Trading widgets
+
+    func testHeadlinesAreTaggedWithTheirSymbols() {
+        let watched = ["AMD", "NVDA", "TEVA.TA"]
+        XCTAssertEqual(TradingFeeds.tickers(in: "Nvidia and AMD rally as chip stocks rebound", watched: watched), ["AMD", "NVDA"])
+        XCTAssertEqual(TradingFeeds.tickers(in: "$MU jumps after HBM guidance", watched: watched), ["MU"])
+        XCTAssertEqual(TradingFeeds.tickers(in: "TSMC lifts capex; ASML orders climb", watched: watched), ["ASML", "TSM"])
+        XCTAssertEqual(TradingFeeds.tickers(in: "Teva shares rise in Tel Aviv after TEVA results", watched: watched), ["TEVA.TA"])
+        XCTAssertTrue(TradingFeeds.tickers(in: "Artificial intelligence spending to grow, on and on", watched: watched).isEmpty,
+                      "short tickers like ON only count as $ON, and 'intelligence' is not Intel")
+        XCTAssertTrue(TradingFeeds.tickers(in: "Intel's foundry wins a customer", watched: watched).contains("INTC"))
+    }
+
+    func testTechHeadlinesNeedWholeWords() {
+        XCTAssertTrue(TradingFeeds.isTechHeadline("Chipmakers slide as export controls tighten"))
+        XCTAssertTrue(TradingFeeds.isTechHeadline("AI capex: hyperscalers raise guidance"))
+        XCTAssertFalse(TradingFeeds.isTechHeadline("Airlines cut capacity as aid talks stall"))
+        XCTAssertFalse(TradingFeeds.isTechHeadline("Oil climbs to a five-month high"))
+    }
+
+    func testWireMergesNewestFirstWithoutRepeatsOrStaleStories() throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-23T14:00:00Z"))
+        let bloomberg = TradingFeeds.WireSource(id: "b", name: "Bloomberg", url: URL(string: "https://b.example")!, isTech: false)
+        let cnbc = TradingFeeds.WireSource(id: "c", name: "CNBC", url: URL(string: "https://c.example")!, isTech: false)
+        let items = TradingFeeds.mergeWire([
+            (bloomberg, [
+                FeedItem(title: "Nvidia hits a record", link: URL(string: "https://b.example/1?utm=rss"), date: now.addingTimeInterval(-600)),
+                FeedItem(title: "Oil climbs", link: URL(string: "https://b.example/2"), date: now.addingTimeInterval(-60)),
+                FeedItem(title: "An old story", link: URL(string: "https://b.example/3"), date: now.addingTimeInterval(-3 * 86400))
+            ]),
+            (cnbc, [
+                FeedItem(title: "Nvidia hits a record!", link: URL(string: "https://c.example/9"), date: now.addingTimeInterval(-300)),
+                FeedItem(title: "Same link, other title", link: URL(string: "https://b.example/1"), date: now)
+            ])
+        ], watched: ["NVDA"], now: now)
+        XCTAssertEqual(items.map(\.title), ["Oil climbs", "Nvidia hits a record"])
+        XCTAssertEqual(items.last?.tickers, ["NVDA"])
+        XCTAssertTrue(try XCTUnwrap(items.last).isTech, "tagged headlines count as tech")
+        XCTAssertFalse(try XCTUnwrap(items.first).isTech)
+    }
+
+    func testLiveVideoIsFoundOnlyWhenTheChannelIsLive() {
+        XCTAssertEqual(
+            TradingFeeds.parseLiveVideoID(html: #"<head><link rel="canonical" href="https://www.youtube.com/watch?v=QB5BNdBFujE"></head>"#),
+            "QB5BNdBFujE"
+        )
+        XCTAssertNil(TradingFeeds.parseLiveVideoID(
+            html: #"<link rel="canonical" href="https://www.youtube.com/channel/UCrp_UI8XtuYfpiqluWLD7Lw">"#
+        ))
+    }
+
+    func testEarningsAreParsedAndFilteredToRelevantNames() {
+        let json = """
+        {"data": {"rows": [
+          {"symbol": "GOOGL", "name": "Alphabet Inc. Class A Common Stock", "time": "time-after-hours", "epsForecast": "$2.94", "marketCap": "$4,094,114,920,000"},
+          {"symbol": "GOOG", "name": "Alphabet Inc. Class C Capital Stock", "time": "time-after-hours", "epsForecast": "$2.94", "marketCap": "$4,094,114,920,000"},
+          {"symbol": "GEV", "name": "GE Vernova Inc.", "time": "time-pre-market", "epsForecast": "$4.03", "marketCap": "$246,603,596,000"},
+          {"symbol": "TXN", "name": "Texas Instruments Incorporated", "time": "time-pre-market", "epsForecast": "", "marketCap": "$180,000,000,000"},
+          {"symbol": "XYZQ", "name": "Watched Co", "time": "time-not-supplied", "epsForecast": "$0.10", "marketCap": "$1,000"}
+        ]}}
+        """
+        let all = TradingFeeds.parseEarnings(Data(json.utf8), day: "2026-10-28")
+        XCTAssertEqual(all.count, 5)
+        XCTAssertEqual(all.first?.name, "Alphabet")
+        XCTAssertEqual(all.first?.marketCap, 4_094_114_920_000)
+        let relevant = TradingFeeds.relevantEarnings(all, watched: ["XYZQ"])
+        XCTAssertEqual(relevant.map(\.symbol), ["TXN", "GOOGL", "XYZQ"], "before the open, then after the close by size, then unknown")
+        XCTAssertNil(relevant.first?.epsEstimate)
+        XCTAssertEqual(relevant.first?.time, .beforeOpen)
+    }
+
+    func testMacroCalendarKeepsUSEventsOfNote() throws {
+        let json = """
+        [
+          {"title": "CPI m/m", "country": "USD", "date": "2026-10-23T08:30:00-04:00", "impact": "High", "forecast": "0.3%", "previous": "0.4%", "actual": ""},
+          {"title": "Unemployment Claims", "country": "USD", "date": "2026-10-22T08:30:00-04:00", "impact": "Medium", "forecast": "200K", "previous": "199K", "actual": "195K"},
+          {"title": "Building Permits", "country": "USD", "date": "2026-10-20T08:30:00-04:00", "impact": "Low", "forecast": "1.39M", "previous": "1.39M"},
+          {"title": "German Ifo", "country": "EUR", "date": "2026-10-23T04:00:00-04:00", "impact": "High", "forecast": "", "previous": ""}
+        ]
+        """
+        let events = TradingFeeds.parseMacro(Data(json.utf8))
+        XCTAssertEqual(events.map(\.title), ["CPI m/m", "Unemployment Claims"])
+        XCTAssertEqual(events.first?.impact, .high)
+        XCTAssertNil(events.first?.actual, "an empty actual is not yet released")
+        XCTAssertEqual(events.last?.actual, "195K")
+        XCTAssertEqual(events.first?.date, try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-23T12:30:00Z")))
+    }
+
+    @MainActor
+    func testEarningsDaysSkipWeekends() throws {
+        // Friday 23 October 2026, 10:00 New York.
+        let friday = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-23T14:00:00Z"))
+        XCTAssertEqual(
+            MarketCalendarModel.reportingDays(from: friday),
+            ["2026-10-23", "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"]
+        )
     }
 
     // MARK: Radio stations
@@ -707,6 +807,82 @@ final class DeskPulseTests: XCTestCase {
         let channel13 = DashboardWidget(id: UUID(), kind: .liveTV13, x: 0, y: 0, width: 300, height: 200)
         let snapshot = DashboardLayoutSnapshot(widgets: [cnn, channel13], hiddenKinds: [.liveTV13])
         XCTAssertEqual(DashboardModel.normalizedWarSnapshot(snapshot), snapshot)
+    }
+
+    // MARK: Live TV
+
+    private func widget(_ kind: WidgetKind, _ x: Double, _ y: Double, _ width: Double, _ height: Double) -> DashboardWidget {
+        DashboardWidget(id: UUID(), kind: kind, x: x, y: y, width: width, height: height)
+    }
+
+    /// The situation layout's Kan 11 and Channel 12 become one card across both;
+    /// CNN Live keeps its own card.
+    func testAdjacentTVCardsBecomeOneCardAcrossThem() throws {
+        let snapshot = DashboardLayoutSnapshot(
+            widgets: [
+                widget(.liveTV11, 16, 192, 400, 224),
+                widget(.liveTV, 432, 192, 400, 224),
+                widget(.liveTVCNN, 848, 192, 400, 224),
+                widget(.liveTV13, 0, 0, 300, 200),
+                widget(.radio, 1264, 192, 430, 224)
+            ],
+            hiddenKinds: [.liveTV13]
+        )
+        let upgraded = DashboardModel.consolidatingLiveTV(snapshot)
+        let tv = try XCTUnwrap(upgraded.widgets.first { $0.kind == .liveTVAll })
+        XCTAssertEqual([tv.x, tv.y, tv.width, tv.height], [16, 192, 816, 224])
+        XCTAssertFalse(upgraded.hiddenKinds.contains(.liveTVAll))
+        XCTAssertTrue(upgraded.hiddenKinds.isSuperset(of: [.liveTV11, .liveTV, .liveTV13]))
+        XCTAssertFalse(upgraded.hiddenKinds.contains(.liveTVCNN), "CNN Live is not Israeli TV")
+        XCTAssertFalse(upgraded.hiddenKinds.contains(.radio))
+        XCTAssertEqual(DashboardModel.consolidatingLiveTV(upgraded), upgraded, "upgrading twice changes nothing")
+    }
+
+    func testScatteredTVCardsGiveTheLargestSpot() throws {
+        let snapshot = DashboardLayoutSnapshot(
+            widgets: [
+                widget(.liveTV, 128, 192, 720, 416),
+                widget(.liveTV11, 928, 752, 384, 224),
+                widget(.liveTVCNN, 1328, 752, 368, 208)
+            ],
+            hiddenKinds: []
+        )
+        let tv = try XCTUnwrap(DashboardModel.consolidatingLiveTV(snapshot).widgets.first { $0.kind == .liveTVAll })
+        XCTAssertEqual([tv.x, tv.y, tv.width, tv.height], [128, 192, 720, 416])
+    }
+
+    func testLayoutWithoutTVKeepsTheCombinedCardHidden() {
+        let snapshot = DashboardLayoutSnapshot(widgets: [widget(.ynet, 0, 0, 300, 300)], hiddenKinds: [.liveTVAll])
+        let upgraded = DashboardModel.consolidatingLiveTV(snapshot)
+        XCTAssertTrue(upgraded.hiddenKinds.contains(.liveTVAll))
+        XCTAssertEqual(upgraded.widgets, snapshot.widgets)
+    }
+
+    /// The generated scripts must at least parse; a stray quote silently breaks a player.
+    func testGeneratedPlayerScriptsParse() throws {
+        let html = LiveTVWidget.hlsPlayerHTML(
+            url: try XCTUnwrap(URL(string: "https://example.com/live.m3u8?a=1&b=2")),
+            label: "Channel 13",
+            muted: true
+        )
+        let script = try XCTUnwrap(html.components(separatedBy: "<script>").last?.components(separatedBy: "</script>").first)
+        for source in [script, EmbeddedWebView.muteOnFirstPlayScript] {
+            let context = try XCTUnwrap(JSContext())
+            var error: String?
+            context.exceptionHandler = { _, exception in error = exception?.toString() }
+            // Wrapped in a function that is never called: parsed, not run.
+            context.evaluateScript("(function () {\n\(source)\n})")
+            XCTAssertNil(error)
+        }
+        XCTAssertTrue(html.contains("muted"))
+        XCTAssertFalse(LiveTVWidget.hlsPlayerHTML(url: try XCTUnwrap(URL(string: "https://e.x/a.m3u8")), label: "Kan 11", muted: false)
+            .contains("autoplay playsinline muted"))
+    }
+
+    func testSplitScreenFitsTheCardShape() {
+        XCTAssertTrue(LiveTVHubWidget.bestGrid(count: 4, in: CGSize(width: 1232, height: 190), gap: 4) == (4, 1), "a wide strip")
+        XCTAssertTrue(LiveTVHubWidget.bestGrid(count: 4, in: CGSize(width: 720, height: 400), gap: 4) == (2, 2), "a 16:9 card")
+        XCTAssertTrue(LiveTVHubWidget.bestGrid(count: 4, in: CGSize(width: 400, height: 900), gap: 4) == (1, 4), "a tall column")
     }
 
     // MARK: Stocks

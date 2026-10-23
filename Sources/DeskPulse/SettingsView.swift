@@ -343,7 +343,7 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
             Section("Top bar") {
-                ForEach(WidgetKind.allCases) { kind in
+                ForEach(WidgetKind.available) { kind in
                     Toggle(isOn: Binding(
                         get: { !settings.hiddenFromTopBar.contains(kind) },
                         set: { shown in

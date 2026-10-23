@@ -8,6 +8,20 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
     case liveTV11, liveTV, liveTV13, liveTVCNN
     case radio
     case myNews
+    case marketWire, financeTV, semis, marketCalendar
+    /// Israeli TV (Kan 11, Channels 12, 13 and 14) in one card, one at a time or all
+    /// at once.
+    case liveTVAll
+
+    /// Replaced by `liveTVAll`; kept so saved layouts still decode.
+    var isRetired: Bool {
+        [.liveTV11, .liveTV, .liveTV13].contains(self)
+    }
+
+    /// The cards that can be added, in top-bar order.
+    static var available: [WidgetKind] {
+        allCases.filter { !$0.isRetired }
+    }
 
     var id: String { rawValue }
 
@@ -31,6 +45,11 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .liveTVCNN: "CNN Live"
         case .radio: "Israeli radio"
         case .myNews: "My news"
+        case .marketWire: "Market wire"
+        case .financeTV: "Finance TV"
+        case .semis: "Semis heatmap"
+        case .marketCalendar: "Earnings & macro"
+        case .liveTVAll: "Israeli TV"
         }
     }
 
@@ -54,6 +73,11 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .liveTVCNN: "globe.americas.fill"
         case .radio: "radio.fill"
         case .myNews: "newspaper.circle.fill"
+        case .marketWire: "bolt.horizontal.fill"
+        case .financeTV: "play.tv.fill"
+        case .semis: "square.grid.3x3.fill"
+        case .marketCalendar: "calendar.badge.clock"
+        case .liveTVAll: "tv.fill"
         }
     }
 
@@ -77,6 +101,11 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .liveTVCNN: Color(red: 0.90, green: 0.12, blue: 0.15)
         case .radio: Color(red: 0.55, green: 0.42, blue: 1)
         case .myNews: .teal
+        case .marketWire: .orange
+        case .financeTV: Color(red: 0.95, green: 0.35, blue: 0.25)
+        case .semis: Color(red: 0.30, green: 0.85, blue: 0.55)
+        case .marketCalendar: .indigo
+        case .liveTVAll: Color(red: 0.22, green: 0.65, blue: 1)
         }
     }
 }

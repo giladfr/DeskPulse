@@ -92,6 +92,15 @@ final class DashboardModel: ObservableObject {
             defaults.set(true, forKey: compactAMDStorageKey)
         }
         inferActiveSavedLayoutIfNeeded()
+        let consolidated = Self.consolidatingLiveTV(
+            DashboardLayoutSnapshot(widgets: widgets, hiddenKinds: hiddenKinds)
+        )
+        if consolidated.widgets != widgets || consolidated.hiddenKinds != hiddenKinds {
+            widgets = consolidated.widgets
+            hiddenKinds = consolidated.hiddenKinds
+            save()
+            saveHiddenKinds()
+        }
         ensureWidgetLibrary()
         observeSettings()
         redAlert.onAlert = { [weak self] alert in self?.handle(alert) }
@@ -437,12 +446,13 @@ final class DashboardModel: ObservableObject {
             let data = UserDefaults.standard.data(
                 forKey: "\(layoutStoragePrefix)\(slot)"
             ),
-            let snapshot = try? JSONDecoder().decode(
+            let stored = try? JSONDecoder().decode(
                 DashboardLayoutSnapshot.self,
                 from: data
             )
         else { return false }
 
+        let snapshot = Self.consolidatingLiveTV(stored)
         widgets = snapshot.widgets
         hiddenKinds = snapshot.hiddenKinds
         needsInitialArrange = false
@@ -458,7 +468,7 @@ final class DashboardModel: ObservableObject {
                DashboardLayoutSnapshot.self,
                from: data
            ) {
-            let snapshot = Self.normalizedWarSnapshot(storedSnapshot)
+            let snapshot = Self.consolidatingLiveTV(Self.normalizedWarSnapshot(storedSnapshot))
             widgets = snapshot.widgets
             hiddenKinds = snapshot.hiddenKinds
             if snapshot != storedSnapshot,
@@ -510,8 +520,8 @@ final class DashboardModel: ObservableObject {
         let frames: [(WidgetKind, CGRect)] = [
             (.clocks, CGRect(x: edge, y: edge, width: clocksWidth, height: topHeight)),
             (.date, CGRect(x: edge + clocksWidth + gap, y: edge, width: dateWidth, height: topHeight)),
-            (.liveTV11, CGRect(x: edge, y: mediaY, width: mediaWidth, height: mediaHeight)),
-            (.liveTV, CGRect(x: edge + mediaWidth + gap, y: mediaY, width: mediaWidth, height: mediaHeight)),
+            // The Israeli channels side by side across two cards, then CNN Live.
+            (.liveTVAll, CGRect(x: edge, y: mediaY, width: mediaWidth * 2 + gap, height: mediaHeight)),
             (.liveTVCNN, CGRect(x: edge + (mediaWidth + gap) * 2, y: mediaY, width: mediaWidth, height: mediaHeight)),
             (.radio, CGRect(x: edge + (mediaWidth + gap) * 3, y: mediaY, width: mediaWidth, height: mediaHeight)),
             (.redAlert, CGRect(x: edge, y: mainY, width: alertWidth, height: mainHeight)),
@@ -706,12 +716,15 @@ final class DashboardModel: ObservableObject {
     private func ensureWidgetLibrary() {
         let additions: [(WidgetKind, Double, Double)] = [
             (.redAlert, 500, 500),
-            (.liveTV11, 520, 300),
-            (.liveTV13, 520, 300),
+            (.liveTVAll, 640, 380),
             (.liveTVCNN, 520, 300),
             (.cnn, 420, 400),
             (.fox, 420, 400),
-            (.myNews, 460, 420)
+            (.myNews, 460, 420),
+            (.marketWire, 480, 520),
+            (.financeTV, 560, 360),
+            (.semis, 440, 260),
+            (.marketCalendar, 620, 360)
         ]
         var changed = false
         for (kind, width, height) in additions
@@ -750,6 +763,39 @@ final class DashboardModel: ObservableObject {
             setActiveLayout(.saved(slot))
             return
         }
+    }
+
+    /// Replaces the separate Israeli TV cards (Kan 11, Channels 12 and 13) of a layout
+    /// saved before the combined Live TV card with that card: across the space they
+    /// filled when they sat together, else where the largest of them was.
+    static func consolidatingLiveTV(_ snapshot: DashboardLayoutSnapshot) -> DashboardLayoutSnapshot {
+        let retired = WidgetKind.allCases.filter(\.isRetired)
+        var widgets = snapshot.widgets
+        var hidden = snapshot.hiddenKinds
+        let shown = widgets.filter { $0.kind.isRetired && !hidden.contains($0.kind) }
+        hidden.formUnion(retired)
+        guard !shown.isEmpty else {
+            return DashboardLayoutSnapshot(widgets: widgets, hiddenKinds: hidden)
+        }
+        let rects = shown.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+        let union = rects.dropFirst().reduce(rects[0]) { $0.union($1) }
+        let covered = rects.map { $0.width * $0.height }.reduce(0, +)
+        let frame = union.width * union.height <= covered * 1.3
+            ? union
+            : rects.max { $0.width * $0.height < $1.width * $1.height } ?? union
+        if let index = widgets.firstIndex(where: { $0.kind == .liveTVAll }) {
+            widgets[index].x = frame.minX
+            widgets[index].y = frame.minY
+            widgets[index].width = frame.width
+            widgets[index].height = frame.height
+        } else {
+            widgets.append(DashboardWidget(
+                id: UUID(), kind: .liveTVAll,
+                x: frame.minX, y: frame.minY, width: frame.width, height: frame.height
+            ))
+        }
+        hidden.remove(.liveTVAll)
+        return DashboardLayoutSnapshot(widgets: widgets, hiddenKinds: hidden)
     }
 
     /// Upgrades a situation layout saved before CNN Live replaced Channel 13 there.
@@ -814,7 +860,7 @@ final class DashboardModel: ObservableObject {
         .init(id: UUID(), kind: .rotter, x: 1462, y: 392, width: 534, height: 330),
         .init(id: UUID(), kind: .whatsapp, x: 24, y: 738, width: 960, height: 390),
         .init(id: UUID(), kind: .youtubeMusic, x: 1000, y: 738, width: 996, height: 390),
-        .init(id: UUID(), kind: .liveTV, x: 24, y: 1144, width: 960, height: 480),
+        .init(id: UUID(), kind: .liveTVAll, x: 24, y: 1144, width: 960, height: 480),
         .init(id: UUID(), kind: .radio, x: 1000, y: 1144, width: 520, height: 260)
     ]
 
