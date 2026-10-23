@@ -624,11 +624,7 @@ struct LiveTVWidget: View {
                         startsMuted: muted
                     )
                 case .hls(let url):
-                    EmbeddedWebView(
-                        source: .html(Self.hlsPlayerHTML(url: url, label: label, muted: muted)),
-                        allowedHosts: [],
-                        pageZoom: 1
-                    )
+                    NativeStreamPlayer(url: url, label: label, muted: muted)
                 }
             } else if lookupFailed {
                 UnavailableState(
@@ -652,58 +648,6 @@ struct LiveTVWidget: View {
                 try? await Task.sleep(for: .seconds(30))
             }
         }
-    }
-
-    /// A plain video player for an HLS stream (WebKit plays HLS natively). A watchdog
-    /// reloads the stream when it stalls or fails, and says so when it keeps failing,
-    /// e.g. a channel only available in Israel.
-    static func hlsPlayerHTML(url: URL, label: String, muted: Bool) -> String {
-        """
-        <!doctype html>
-        <html>
-        <head>
-          <meta name="color-scheme" content="dark">
-          <meta name="viewport" content="width=device-width,initial-scale=1">
-          <style>
-            * { box-sizing: border-box; }
-            html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
-            video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
-            #status { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-                      text-align: center; padding: 16px; color: #aaa; font: 12px -apple-system, sans-serif; }
-          </style>
-        </head>
-        <body>
-          <video controls autoplay playsinline \(muted ? "muted" : "")></video>
-          <div id="status"></div>
-          <script>
-            const source = "\(url.absoluteString)";
-            const video = document.querySelector('video');
-            const status = document.getElementById('status');
-            video.muted = \(muted ? "true" : "false");
-            let failures = 0, lastTime = -1, stuckSince = Date.now();
-            const show = (text) => { status.textContent = text; status.style.display = text ? 'flex' : 'none'; };
-            const start = () => { video.src = source; video.play().catch(() => {}); };
-            video.addEventListener('playing', () => { failures = 0; video.controls = true; show(''); });
-            video.addEventListener('error', () => {
-              failures += 1;
-              // A player that keeps failing hides its controls so the message shows.
-              video.controls = failures < 3;
-              show(failures >= 3
-                ? "\(label) isn't playing. The stream may be limited to viewers in Israel. Retrying every 30 seconds."
-                : "Reconnecting to \(label)…");
-              setTimeout(start, failures >= 3 ? 30000 : 4000);
-            });
-            // A live stream that stops moving for 20 seconds is reloaded.
-            setInterval(() => {
-              if (video.paused || video.error) { stuckSince = Date.now(); return; }
-              if (video.currentTime !== lastTime) { lastTime = video.currentTime; stuckSince = Date.now(); return; }
-              if (Date.now() - stuckSince > 20000) { stuckSince = Date.now(); show('Reconnecting to \(label)…'); start(); }
-            }, 5000);
-            start();
-          </script>
-        </body>
-        </html>
-        """
     }
 }
 

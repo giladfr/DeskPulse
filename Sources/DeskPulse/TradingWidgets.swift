@@ -240,12 +240,8 @@ struct FinanceTVWidget: View {
             .padding(.vertical, 5)
             Group {
                 if case .hls(let url) = channel.source {
-                    EmbeddedWebView(
-                        source: .html(LiveTVWidget.hlsPlayerHTML(url: url, label: channel.name, muted: true)),
-                        allowedHosts: [],
-                        pageZoom: 1
-                    )
-                    .id(channel.id)
+                    NativeStreamPlayer(url: url, label: channel.name, muted: true)
+                        .id(channel.id)
                 } else if let videoID {
                     EmbeddedWebView(
                         source: .html(Self.playerHTML(videoID: videoID), baseURL: Self.playerOrigin),

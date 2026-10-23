@@ -931,25 +931,14 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertEqual(upgraded.widgets, snapshot.widgets)
     }
 
-    /// The generated scripts must at least parse; a stray quote silently breaks a player.
-    func testGeneratedPlayerScriptsParse() throws {
-        let html = LiveTVWidget.hlsPlayerHTML(
-            url: try XCTUnwrap(URL(string: "https://example.com/live.m3u8?a=1&b=2")),
-            label: "Channel 13",
-            muted: true
-        )
-        let script = try XCTUnwrap(html.components(separatedBy: "<script>").last?.components(separatedBy: "</script>").first)
-        for source in [script, EmbeddedWebView.muteOnFirstPlayScript] {
-            let context = try XCTUnwrap(JSContext())
-            var error: String?
-            context.exceptionHandler = { _, exception in error = exception?.toString() }
-            // Wrapped in a function that is never called: parsed, not run.
-            context.evaluateScript("(function () {\n\(source)\n})")
-            XCTAssertNil(error)
-        }
-        XCTAssertTrue(html.contains("muted"))
-        XCTAssertFalse(LiveTVWidget.hlsPlayerHTML(url: try XCTUnwrap(URL(string: "https://e.x/a.m3u8")), label: "Kan 11", muted: false)
-            .contains("autoplay playsinline muted"))
+    /// The injected mute script must at least parse; a stray quote silently breaks it.
+    func testInjectedMuteScriptParses() throws {
+        let context = try XCTUnwrap(JSContext())
+        var error: String?
+        context.exceptionHandler = { _, exception in error = exception?.toString() }
+        // Wrapped in a function that is never called: parsed, not run.
+        context.evaluateScript("(function () {\n\(EmbeddedWebView.muteOnFirstPlayScript)\n})")
+        XCTAssertNil(error)
     }
 
     func testSplitScreenFitsTheCardShape() {
