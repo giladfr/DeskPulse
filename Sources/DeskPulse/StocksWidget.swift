@@ -834,7 +834,9 @@ private struct RangeBar: View {
 
 /// Prices over the chosen range, green above the baseline (previous close for one day,
 /// the close before the range otherwise) and red below, with price-alert lines and a
-/// crosshair that reads out the price and time under the pointer.
+/// crosshair that reads out the price and time under the pointer. On the one-day chart,
+/// pre-market and after-hours trading sit on shaded bands with a dimmer line, so the
+/// regular session stands out.
 struct PriceGraph: View {
     let chart: PriceChart
     let details: SymbolDetails?
@@ -846,6 +848,21 @@ struct PriceGraph: View {
             guard let layout = Layout(chart: chart, alertLevels: alertLevels, size: size) else { return }
             let baselineY = layout.y(chart.baseline)
             let points = chart.points
+
+            // The regular session at full strength, extended hours dimmed.
+            let sessions = layout.sessionBands()
+            let parts = [(sessions.regular, 1.0)] + sessions.extended.map { ($0.rect, 0.4) }
+            for band in sessions.extended {
+                context.fill(Path(band.rect), with: .color(.white.opacity(0.035)))
+                let label = context.resolve(
+                    Text(band.label)
+                        .font(.system(size: 7.5, weight: .heavy, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.8))
+                )
+                if label.measure(in: size).width + 6 < band.rect.width {
+                    context.draw(label, at: CGPoint(x: band.rect.minX + 4, y: size.height - 3), anchor: .bottomLeading)
+                }
+            }
 
             var area = Path()
             area.move(to: CGPoint(x: layout.x(0), y: baselineY))
@@ -859,9 +876,12 @@ struct PriceGraph: View {
                 (Color.red, CGRect(x: 0, y: baselineY, width: size.width, height: size.height - baselineY))
             ]
             for (color, rect) in halves {
-                context.drawLayer { layer in
-                    layer.clip(to: Path(rect))
-                    layer.fill(area, with: .color(color.opacity(0.13)))
+                for (part, strength) in parts {
+                    context.drawLayer { layer in
+                        layer.clip(to: Path(rect))
+                        layer.clip(to: Path(part))
+                        layer.fill(area, with: .color(color.opacity(0.13 * strength)))
+                    }
                 }
             }
 
@@ -869,6 +889,17 @@ struct PriceGraph: View {
             baseline.move(to: CGPoint(x: 0, y: baselineY))
             baseline.addLine(to: CGPoint(x: size.width, y: baselineY))
             context.stroke(baseline, with: .color(.secondary.opacity(0.5)), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+            let baselineLabel = context.resolve(
+                Text("\(chart.range == .day ? "Prev close" : "\(chart.range.rawValue) ago") \(PriceText.price(chart.baseline, details: details))")
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .foregroundColor(.secondary)
+            )
+            let labelAbove = baselineY > 14
+            context.draw(
+                baselineLabel,
+                at: CGPoint(x: 3, y: labelAbove ? baselineY - 2 : baselineY + 2),
+                anchor: labelAbove ? .bottomLeading : .topLeading
+            )
 
             // Where the regular session opened, after pre-market trading.
             if chart.range == .day,
@@ -899,9 +930,16 @@ struct PriceGraph: View {
                 if index == 0 { line.move(to: position) } else { line.addLine(to: position) }
             }
             for (color, rect) in halves {
-                context.drawLayer { layer in
-                    layer.clip(to: Path(rect))
-                    layer.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                for (part, strength) in parts {
+                    context.drawLayer { layer in
+                        layer.clip(to: Path(rect))
+                        layer.clip(to: Path(part))
+                        layer.stroke(
+                            line,
+                            with: .color(color.opacity(strength)),
+                            style: StrokeStyle(lineWidth: strength < 1 ? 1.2 : 1.6, lineCap: .round, lineJoin: .round)
+                        )
+                    }
                 }
             }
 
@@ -926,7 +964,7 @@ struct PriceGraph: View {
                 )
                 let change = chart.baseline == 0 ? 0 : (point.price - chart.baseline) / chart.baseline * 100
                 let label = context.resolve(
-                    Text("\(PriceText.price(point.price, details: details))  \(PriceText.percent(change))  \(timeLabel(point.timestamp))")
+                    Text("\(PriceText.price(point.price, details: details))  \(PriceText.percent(change))  \(timeLabel(point.timestamp))\(sessionTag(point.session))")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                 )
@@ -946,6 +984,14 @@ struct PriceGraph: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(chart.range.rawValue) chart of \(chart.symbol)")
         .accessibilityValue(chart.points.last.map { "Last \(PriceText.price($0.price)), baseline \(PriceText.price(chart.baseline))" } ?? "")
+    }
+
+    private func sessionTag(_ session: TradingSession) -> String {
+        switch session {
+        case .premarket: "  PRE"
+        case .afterHours: "  AFTER"
+        case .regular: ""
+        }
     }
 
     private func timeLabel(_ date: Date) -> String {
@@ -999,6 +1045,34 @@ struct PriceGraph: View {
 
         func y(_ price: Double) -> CGFloat {
             size.height * (1 - (price - minimum) / (maximum - minimum))
+        }
+
+        struct ExtendedBand {
+            let rect: CGRect
+            let label: String
+        }
+
+        /// The regular session's stretch of the one-day chart, and the pre-market and
+        /// after-hours stretches either side of it.
+        func sessionBands() -> (regular: CGRect, extended: [ExtendedBand]) {
+            let full = CGRect(origin: .zero, size: size)
+            let points = chart.points
+            guard chart.range == .day, points.contains(where: { $0.session != .regular }) else { return (full, []) }
+            guard let open = points.firstIndex(where: { $0.session == .regular }) else {
+                let label = points.first?.session == .afterHours ? "AFTER HOURS" : "PRE-MARKET"
+                return (.zero, [ExtendedBand(rect: full, label: label)])
+            }
+            let start = open > 0 ? x(open) : 0
+            let close = points[open...].firstIndex { $0.session == .afterHours }
+            let end = close.map { x($0) } ?? size.width
+            var extended: [ExtendedBand] = []
+            if start > 0 {
+                extended.append(ExtendedBand(rect: CGRect(x: 0, y: 0, width: start, height: size.height), label: "PRE"))
+            }
+            if end < size.width {
+                extended.append(ExtendedBand(rect: CGRect(x: end, y: 0, width: size.width - end, height: size.height), label: "AFTER"))
+            }
+            return (CGRect(x: start, y: 0, width: end - start, height: size.height), extended)
         }
 
         func nearestIndex(toX target: CGFloat) -> Int? {
