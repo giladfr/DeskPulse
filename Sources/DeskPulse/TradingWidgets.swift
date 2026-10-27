@@ -240,16 +240,12 @@ struct FinanceTVWidget: View {
             .padding(.vertical, 5)
             Group {
                 if case .hls(let url) = channel.source {
-                    EmbeddedWebView(
-                        source: .html(LiveTVWidget.hlsPlayerHTML(url: url, label: channel.name, muted: true)),
-                        allowedHosts: [],
-                        pageZoom: 1
-                    )
-                    .id(channel.id)
+                    NativeStreamPlayer(url: url, label: channel.name, muted: true)
+                        .id(channel.id)
                 } else if let videoID {
                     EmbeddedWebView(
-                        source: .html(Self.playerHTML(videoID: videoID), baseURL: Self.playerOrigin),
-                        allowedHosts: ["youtube.com", "youtube-nocookie.com", "google.com", "gstatic.com", "ytimg.com", "googlevideo.com"],
+                        source: .html(YouTubeLive.playerHTML(videoID: videoID), baseURL: YouTubeLive.origin),
+                        allowedHosts: YouTubeLive.allowedHosts,
                         pageZoom: 1
                     )
                     .id(videoID)
@@ -280,13 +276,16 @@ struct FinanceTVWidget: View {
             }
         }
     }
+}
 
-    /// YouTube's embedded player needs to know which site embeds it (it refuses
-    /// pages without a referrer, and pages claiming to be youtube.com). Nothing is
-    /// loaded from this address; it only becomes the player page's origin.
-    private static let playerOrigin = URL(string: "https://giladfr.github.io/DeskPulse/")
+/// YouTube's embedded live player, for Finance TV and Israeli channels on YouTube.
+enum YouTubeLive {
+    /// The player needs to know which site embeds it (it refuses pages without a
+    /// referrer, and pages claiming to be youtube.com). Nothing is loaded from this
+    /// address; it only becomes the player page's origin.
+    static let origin = URL(string: "https://giladfr.github.io/DeskPulse/")
 
-    private static func playerHTML(videoID: String) -> String {
+    static func playerHTML(videoID: String, muted: Bool = true) -> String {
         """
         <!doctype html>
         <html>
@@ -298,13 +297,15 @@ struct FinanceTVWidget: View {
           </style>
         </head>
         <body>
-          <iframe src="https://www.youtube.com/embed/\(videoID)?autoplay=1&mute=1&playsinline=1&rel=0&origin=https%3A%2F%2Fgiladfr.github.io"
+          <iframe src="https://www.youtube.com/embed/\(videoID)?autoplay=1&mute=\(muted ? 1 : 0)&playsinline=1&rel=0&origin=https%3A%2F%2Fgiladfr.github.io"
                   referrerpolicy="strict-origin-when-cross-origin"
                   allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
         </body>
         </html>
         """
     }
+
+    static let allowedHosts: Set<String> = ["youtube.com", "youtube-nocookie.com", "google.com", "gstatic.com", "ytimg.com", "googlevideo.com"]
 }
 
 // MARK: - Semiconductor heatmap

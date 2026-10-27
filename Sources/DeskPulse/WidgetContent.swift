@@ -30,10 +30,10 @@ struct WidgetContent: View {
             allowedHosts: ["youtube.com", "google.com", "googleusercontent.com", "gstatic.com"],
             pageZoom: 0.75
         )
-        case .liveTV11: LiveTVWidget(channel: "11", label: "Channel 11")
-        case .liveTV: LiveTVWidget(channel: "12", label: "Channel 12")
-        case .liveTV13: LiveTVWidget(channel: "13", label: "Channel 13")
-        case .liveTVCNN: LiveTVWidget(channel: "cnn", label: "CNN")
+        case .liveTV11: LiveTVWidget(channel: LiveTVHubWidget.channels[0])
+        case .liveTV: LiveTVWidget(channel: LiveTVHubWidget.channels[1])
+        case .liveTV13: LiveTVWidget(channel: LiveTVHubWidget.channels[2])
+        case .liveTVCNN: LiveTVWidget(channel: .init(id: "cnn", label: "CNN"))
         case .radio: RadioWidget()
         case .myNews: MyNewsWidget()
         case .marketWire: MarketWireWidget()
@@ -41,6 +41,8 @@ struct WidgetContent: View {
         case .semis: HeatmapWidget()
         case .marketCalendar: MarketCalendarWidget()
         case .liveTVAll: LiveTVHubWidget()
+        case .elections: WebTabsWidget(tabs: WebTabsWidget.electionTabs, storageKey: "elections.tab", accent: .blue)
+        case .israeliSites: WebTabsWidget(tabs: WebTabsWidget.israeliSiteTabs, storageKey: "israeliSites.tab", accent: .mint)
         }
     }
 }
@@ -483,11 +485,119 @@ extension String {
     }
 }
 
+/// A few web pages behind tabs, one shown at a time, with a reload button. Pages that
+/// don't update themselves (the election committee's results) reload on a timer.
+struct WebTabsWidget: View {
+    struct Tab: Identifiable {
+        let id: String
+        let name: String
+        let url: URL
+        var zoom: Double = 0.8
+        var reloadEverySeconds: Double?
+    }
+
+    static let electionTabs: [Tab] = [
+        // The Central Elections Committee's official count, as it is entered.
+        Tab(id: "results", name: "Official results",
+            url: URL(string: "https://votes26.bechirot.gov.il/nationalresults?lang=he")!,
+            zoom: 0.75, reloadEverySeconds: 60),
+        Tab(id: "map", name: "Results map", url: URL(string: "https://elections.govmap.gov.il/")!, zoom: 0.8),
+        Tab(id: "polls", name: "Polls", url: URL(string: "https://www.maariv.co.il/news/elections-2026")!, zoom: 0.7),
+        Tab(id: "ynet", name: "ynet live", url: URL(string: "https://www.ynet.co.il/news/elections2026")!, zoom: 0.7)
+    ]
+
+    static let israeliSiteTabs: [Tab] = [
+        Tab(id: "ynet", name: "ynet", url: URL(string: "https://www.ynet.co.il/")!, zoom: 0.7),
+        Tab(id: "n12", name: "N12", url: URL(string: "https://www.mako.co.il/news")!, zoom: 0.7),
+        Tab(id: "kan", name: "Kan News", url: URL(string: "https://www.kan.org.il/content/kan-news/")!, zoom: 0.7),
+        Tab(id: "haaretz", name: "Haaretz", url: URL(string: "https://www.haaretz.co.il/")!, zoom: 0.7),
+        Tab(id: "maariv", name: "Maariv", url: URL(string: "https://www.maariv.co.il/")!, zoom: 0.7),
+        Tab(id: "walla", name: "Walla", url: URL(string: "https://www.walla.co.il/")!, zoom: 0.7),
+        Tab(id: "i24", name: "i24", url: URL(string: "https://www.i24news.tv/he")!, zoom: 0.7)
+    ]
+
+    let tabs: [Tab]
+    let accent: Color
+    @AppStorage private var selectedID: String
+    @State private var reloadCount = 0
+
+    init(tabs: [Tab], storageKey: String, accent: Color) {
+        self.tabs = tabs
+        self.accent = accent
+        _selectedID = AppStorage(wrappedValue: tabs[0].id, storageKey)
+    }
+
+    private var selected: Tab { tabs.first { $0.id == selectedID } ?? tabs[0] }
+
+    var body: some View {
+        let tab = selected
+        VStack(spacing: 0) {
+            HStack(spacing: 5) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(tabs) { option in
+                            Button { selectedID = option.id } label: {
+                                Text(option.name)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(
+                                        option.id == tab.id ? accent.opacity(0.35) : Color.white.opacity(0.06),
+                                        in: Capsule()
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if let seconds = tab.reloadEverySeconds {
+                    Text("updates every \(Int(seconds)) s")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                }
+                Button { reloadCount += 1 } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .bold))
+                }
+                .buttonStyle(.plain)
+                .help("Reload \(tab.name)")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            EmbeddedWebView(source: .url(tab.url), allowedHosts: [], pageZoom: tab.zoom, blocksAds: true)
+                // A new page per tab and per reload, so each starts clean.
+                .id("\(tab.id)|\(reloadCount)")
+        }
+        .task(id: "\(tab.id)") {
+            guard let seconds = tab.reloadEverySeconds else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                reloadCount += 1
+            }
+        }
+    }
+}
+
 /// Israeli TV in one card: one channel with sound, or all of them tiled to fit the
 /// card, muted until you unmute one in its player.
 struct LiveTVHubWidget: View {
-    static let channels: [(id: String, label: String)] = [
-        ("11", "Kan 11"), ("12", "Channel 12"), ("13", "Channel 13"), ("14", "Channel 14")
+    struct Channel {
+        let id: String
+        let label: String
+        /// The broadcaster's official YouTube channel, used when its own stream is
+        /// refused (e.g. outside Israel) and the channel is live there.
+        var youTube: String?
+        /// Only on YouTube.
+        var youTubeOnly = false
+    }
+
+    static let channels: [Channel] = [
+        Channel(id: "11", label: "Kan 11", youTube: "UCKqFqiCe1dCUxRe0_YNZ6gg"),
+        Channel(id: "12", label: "Channel 12"),
+        Channel(id: "13", label: "Channel 13", youTube: "UC8vRsz-RmoBznazlIULyqhQ"),
+        Channel(id: "14", label: "Channel 14"),
+        Channel(id: "i24", label: "i24 News", youTube: "UCisowXt5wZkp2sR3rFh9lnQ", youTubeOnly: true)
     ]
 
     @AppStorage("liveTV.channel") private var channel = "12"
@@ -514,7 +624,7 @@ struct LiveTVHubWidget: View {
                 } else {
                     let selected = Self.channels.first { $0.id == channel } ?? Self.channels[1]
                     // A new identity per channel, so the previous one is torn down.
-                    LiveTVWidget(channel: selected.id, label: selected.label, muted: false)
+                    LiveTVWidget(channel: selected, muted: false)
                         .id(selected.id)
                 }
             }
@@ -547,8 +657,8 @@ struct LiveTVHubWidget: View {
         }
     }
 
-    private func cell(_ option: (id: String, label: String)) -> some View {
-        LiveTVWidget(channel: option.id, label: option.label, muted: true)
+    private func cell(_ option: Channel) -> some View {
+        LiveTVWidget(channel: option, muted: true)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(alignment: .topLeading) {
                 Button {
@@ -604,17 +714,46 @@ struct LiveTVHubWidget: View {
 }
 
 struct LiveTVWidget: View {
-    let channel: String
-    let label: String
+    let channel: LiveTVHubWidget.Channel
     /// Start without sound (several players at once); the player's controls unmute.
     var muted = true
     @State private var playerSource: LiveTVPlayerSource?
     @State private var lookupFailed = false
     @State private var attempt = 0
+    /// Playing the broadcaster's YouTube live stream instead of its own.
+    @State private var onYouTube = false
+    @State private var youTubeVideoID: String?
+    @State private var youTubeLookedUp = false
+
+    init(channel: LiveTVHubWidget.Channel, muted: Bool = true) {
+        self.channel = channel
+        self.muted = muted
+        _onYouTube = State(initialValue: channel.youTubeOnly)
+    }
+
+    private var label: String { channel.label }
 
     var body: some View {
         Group {
-            if let playerSource {
+            if onYouTube {
+                if let youTubeVideoID {
+                    EmbeddedWebView(
+                        source: .html(YouTubeLive.playerHTML(videoID: youTubeVideoID, muted: muted), baseURL: YouTubeLive.origin),
+                        allowedHosts: YouTubeLive.allowedHosts,
+                        pageZoom: 1
+                    )
+                    .id(youTubeVideoID)
+                } else if youTubeLookedUp {
+                    UnavailableState(
+                        message: channel.youTubeOnly
+                            ? "\(label) isn't live on YouTube right now. Checking again every 2 minutes."
+                            : "\(label) isn't available outside Israel and isn't live on YouTube right now. Checking again every 2 minutes.",
+                        isRetrying: false
+                    ) { retry() }
+                } else {
+                    LoadingState(label: "Finding \(label) on YouTube…")
+                }
+            } else if let playerSource {
                 switch playerSource {
                 case .web(let url):
                     EmbeddedWebView(
@@ -624,28 +763,34 @@ struct LiveTVWidget: View {
                         startsMuted: muted
                     )
                 case .hls(let url):
-                    EmbeddedWebView(
-                        source: .html(Self.hlsPlayerHTML(url: url, label: label, muted: muted)),
-                        allowedHosts: [],
-                        pageZoom: 1
-                    )
+                    NativeStreamPlayer(url: url, label: label, muted: muted) {
+                        if channel.youTube != nil { onYouTube = true }
+                    }
                 }
             } else if lookupFailed {
                 UnavailableState(
                     message: "Couldn't find the \(label) player. Trying again every 30 seconds.",
                     isRetrying: false
-                ) { attempt += 1 }
+                ) { retry() }
             } else {
                 LoadingState(label: "Locating \(label) player…")
             }
         }
-        .id(channel)
-        // Retry tapped: start over at once instead of waiting out the 30 seconds.
-        .task(id: "\(channel)|\(attempt)") {
+        .id(channel.id)
+        // Retry tapped: start over at once instead of waiting.
+        .task(id: "\(channel.id)|\(attempt)|\(onYouTube)") {
+            if onYouTube {
+                await followYouTube()
+                return
+            }
             while playerSource == nil, !Task.isCancelled {
-                if let source = await DataService.fetchLiveTVPlayerSource(channel: channel) {
+                if let source = await DataService.fetchLiveTVPlayerSource(channel: channel.id) {
                     playerSource = source
                     lookupFailed = false
+                    return
+                }
+                if channel.youTube != nil {
+                    onYouTube = true
                     return
                 }
                 lookupFailed = true
@@ -654,56 +799,27 @@ struct LiveTVWidget: View {
         }
     }
 
-    /// A plain video player for an HLS stream (WebKit plays HLS natively). A watchdog
-    /// reloads the stream when it stalls or fails, and says so when it keeps failing,
-    /// e.g. a channel only available in Israel.
-    static func hlsPlayerHTML(url: URL, label: String, muted: Bool) -> String {
-        """
-        <!doctype html>
-        <html>
-        <head>
-          <meta name="color-scheme" content="dark">
-          <meta name="viewport" content="width=device-width,initial-scale=1">
-          <style>
-            * { box-sizing: border-box; }
-            html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
-            video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
-            #status { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-                      text-align: center; padding: 16px; color: #aaa; font: 12px -apple-system, sans-serif; }
-          </style>
-        </head>
-        <body>
-          <video controls autoplay playsinline \(muted ? "muted" : "")></video>
-          <div id="status"></div>
-          <script>
-            const source = "\(url.absoluteString)";
-            const video = document.querySelector('video');
-            const status = document.getElementById('status');
-            video.muted = \(muted ? "true" : "false");
-            let failures = 0, lastTime = -1, stuckSince = Date.now();
-            const show = (text) => { status.textContent = text; status.style.display = text ? 'flex' : 'none'; };
-            const start = () => { video.src = source; video.play().catch(() => {}); };
-            video.addEventListener('playing', () => { failures = 0; video.controls = true; show(''); });
-            video.addEventListener('error', () => {
-              failures += 1;
-              // A player that keeps failing hides its controls so the message shows.
-              video.controls = failures < 3;
-              show(failures >= 3
-                ? "\(label) isn't playing. The stream may be limited to viewers in Israel. Retrying every 30 seconds."
-                : "Reconnecting to \(label)…");
-              setTimeout(start, failures >= 3 ? 30000 : 4000);
-            });
-            // A live stream that stops moving for 20 seconds is reloaded.
-            setInterval(() => {
-              if (video.paused || video.error) { stuckSince = Date.now(); return; }
-              if (video.currentTime !== lastTime) { lastTime = video.currentTime; stuckSince = Date.now(); return; }
-              if (Date.now() - stuckSince > 20000) { stuckSince = Date.now(); show('Reconnecting to \(label)…'); start(); }
-            }, 5000);
-            start();
-          </script>
-        </body>
-        </html>
-        """
+    /// The broadcaster's live video on YouTube, looked up again regularly: a channel
+    /// that goes live (election night) appears, and a restarted stream is followed.
+    private func followYouTube() async {
+        guard let youTube = channel.youTube else { return }
+        while !Task.isCancelled {
+            let found = await TradingFeeds.liveVideoID(channelID: youTube)
+            guard !Task.isCancelled else { return }
+            youTubeLookedUp = true
+            if let found, found != youTubeVideoID { youTubeVideoID = found }
+            try? await Task.sleep(for: .seconds(youTubeVideoID == nil ? 120 : 900))
+        }
+    }
+
+    /// Tries the broadcaster's own stream again (or YouTube for YouTube-only channels).
+    private func retry() {
+        playerSource = nil
+        lookupFailed = false
+        youTubeVideoID = nil
+        youTubeLookedUp = false
+        onYouTube = channel.youTubeOnly
+        attempt += 1
     }
 }
 

@@ -718,6 +718,8 @@ final class DashboardModel: ObservableObject {
             (.redAlert, 500, 500),
             (.liveTVAll, 640, 380),
             (.liveTVCNN, 520, 300),
+            (.elections, 640, 520),
+            (.israeliSites, 560, 520),
             (.cnn, 420, 400),
             (.fox, 420, 400),
             (.myNews, 460, 420),
