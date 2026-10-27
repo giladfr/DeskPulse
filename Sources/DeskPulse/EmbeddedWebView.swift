@@ -17,6 +17,8 @@ struct EmbeddedWebView: NSViewRepresentable {
     /// Mutes each video or audio element when it first plays, in every frame (players
     /// are often cross-origin iframes). The player's own controls can unmute it.
     var startsMuted = false
+    /// Blocks common ad networks and hides standard ad slots (news front pages).
+    var blocksAds = false
 
     static let muteOnFirstPlayScript = """
     (() => {
@@ -57,6 +59,11 @@ struct EmbeddedWebView: NSViewRepresentable {
             ))
         }
 
+        let cachedRules = blocksAds ? AdBlocker.cachedRules : nil
+        if let cachedRules {
+            configuration.userContentController.add(cachedRules)
+        }
+
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
@@ -64,8 +71,19 @@ struct EmbeddedWebView: NSViewRepresentable {
         view.pageZoom = pageZoom
         view.setValue(false, forKey: "drawsBackground")
         view.customUserAgent = Self.safariUserAgent
-        load(source, in: view)
         context.coordinator.loadedSource = source
+        if blocksAds && cachedRules == nil {
+            // The first page compiles the rules (a moment, once per launch), then loads.
+            let source = source
+            Task { @MainActor in
+                if let rules = await AdBlocker.rules() {
+                    view.configuration.userContentController.add(rules)
+                }
+                load(source, in: view)
+            }
+        } else {
+            load(source, in: view)
+        }
         return view
     }
 

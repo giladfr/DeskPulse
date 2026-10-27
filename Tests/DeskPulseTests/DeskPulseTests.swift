@@ -1,4 +1,5 @@
 import JavaScriptCore
+import WebKit
 import XCTest
 @testable import DeskPulse
 
@@ -939,6 +940,18 @@ final class DeskPulseTests: XCTestCase {
         // Wrapped in a function that is never called: parsed, not run.
         context.evaluateScript("(function () {\n\(EmbeddedWebView.muteOnFirstPlayScript)\n})")
         XCTAssertNil(error)
+    }
+
+    /// WebKit rejects rules it can't parse (e.g. "|" in a pattern) and the news cards
+    /// would silently show every ad; compiling them here catches that.
+    @MainActor
+    func testAdBlockingRulesCompile() async throws {
+        let rules = try await WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "DeskPulseAdBlockTest", encodedContentRuleList: AdBlocker.rulesJSON
+        )
+        XCTAssertNotNil(rules)
+        try? await WKContentRuleListStore.default().removeContentRuleList(forIdentifier: "DeskPulseAdBlockTest")
+        XCTAssertTrue(AdBlocker.rulesJSON.contains(#"doubleclick\\.net"#), AdBlocker.rulesJSON)
     }
 
     func testSplitScreenFitsTheCardShape() {

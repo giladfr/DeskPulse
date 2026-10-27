@@ -12,6 +12,10 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
     /// Israeli TV (Kan 11, Channels 12, 13 and 14) in one card, one at a time or all
     /// at once.
     case liveTVAll
+    /// The Knesset election: official live results, the results map, polls, ynet live.
+    case elections
+    /// Front pages of the main Israeli news sites.
+    case israeliSites
 
     /// Replaced by `liveTVAll`; kept so saved layouts still decode.
     var isRetired: Bool {
@@ -50,6 +54,8 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .semis: "Heatmap"
         case .marketCalendar: "Earnings & macro"
         case .liveTVAll: "Israeli TV"
+        case .elections: "Elections 2026"
+        case .israeliSites: "Israeli sites"
         }
     }
 
@@ -78,6 +84,8 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .semis: "square.grid.3x3.fill"
         case .marketCalendar: "calendar.badge.clock"
         case .liveTVAll: "tv.fill"
+        case .elections: "checkmark.seal.fill"
+        case .israeliSites: "safari.fill"
         }
     }
 
@@ -106,6 +114,8 @@ enum WidgetKind: String, Codable, CaseIterable, Identifiable {
         case .semis: Color(red: 0.30, green: 0.85, blue: 0.55)
         case .marketCalendar: .indigo
         case .liveTVAll: Color(red: 0.22, green: 0.65, blue: 1)
+        case .elections: Color(red: 0.35, green: 0.55, blue: 1)
+        case .israeliSites: .mint
         }
     }
 }

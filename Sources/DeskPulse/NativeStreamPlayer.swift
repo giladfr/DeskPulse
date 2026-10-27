@@ -10,6 +10,8 @@ import SwiftUI
 @MainActor
 final class StreamPlayerModel: ObservableObject {
     @Published private(set) var message: String?
+    /// Called once when the stream has failed three times in a row.
+    var onGiveUp: (() -> Void)?
 
     let player = AVPlayer()
     private var url: URL?
@@ -73,6 +75,7 @@ final class StreamPlayerModel: ObservableObject {
 
     private func failed() {
         failures += 1
+        if failures == 3 { onGiveUp?() }
         message = failures >= 3
             ? "\(label) isn't playing. The stream may be limited to viewers in its country. Retrying every 30 seconds."
             : "Reconnecting to \(label)…"
@@ -119,6 +122,8 @@ struct NativeStreamPlayer: View {
     let url: URL
     let label: String
     var muted = true
+    /// Called when the stream keeps failing, e.g. to switch to another source.
+    var onGiveUp: (() -> Void)?
     @StateObject private var model = StreamPlayerModel()
 
     var body: some View {
@@ -143,7 +148,10 @@ struct NativeStreamPlayer: View {
                     .help("Play on an AirPlay speaker or TV (the device streams it directly)")
             }
             .background(Color.black)
-            .onAppear { model.start(url: url, label: label, muted: muted) }
+            .onAppear {
+                model.onGiveUp = onGiveUp
+                model.start(url: url, label: label, muted: muted)
+            }
             .onDisappear { model.stop() }
     }
 }

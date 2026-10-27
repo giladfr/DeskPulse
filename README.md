@@ -87,11 +87,18 @@ with each sector's leaders in blocks on one screen.
 tech (before the open or after the close, with the EPS estimate), plus US economic
 releases with forecast, previous and actual and a countdown to the next one.
 
-**Israeli TV** shows Kan 11 or Channels 12, 13 or 14 with sound, or all of them at
+**Elections 2026** shows the Central Elections Committee's official results page
+(reloaded every minute during the count), the official results map, Maariv's
+polling centre and ynet's election coverage. **Israeli sites** shows the front page
+of ynet, N12, Kan News, Haaretz, Maariv, Walla or i24, with common ad networks
+blocked so the stories fit the card.
+
+**Israeli TV** shows Kan 11, Channels 12, 13 or 14, or i24 News with sound, or all of them at
 once in a split screen fitted to the card (muted; unmute one in its player). Streams
 that stall reconnect by themselves, and closing a card or switching channel stops
 its video and sound at once. Channel 13 only streams to viewers in Israel, so
-elsewhere its tile says so. CNN Live remains a card of its own.
+elsewhere its tile says so; Kan 11 and Channel 13 switch to the broadcaster's own
+YouTube live stream when it is live. CNN Live remains a card of its own.
 
 **My news**
 merges the sources you choose, newest first, with a filter per source. The radio
