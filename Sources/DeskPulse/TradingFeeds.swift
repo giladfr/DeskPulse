@@ -340,8 +340,8 @@ enum TradingFeeds {
     ]
 
     static let semiconductorSymbols = [
-        "NVDA", "AVGO", "TSM", "AMD", "ASML", "QCOM", "ARM", "AMAT", "MU", "LRCX",
-        "KLAC", "INTC", "TXN", "ADI", "MRVL", "SMCI", "NXPI", "MPWR", "ON", "MCHP"
+        "NVDA", "AVGO", "TSM", "AMD", "ASML", "QCOM", "INTC", "AMAT", "MU", "ARM",
+        "LRCX", "KLAC", "TXN", "ADI", "MRVL", "SMCI", "NXPI", "MPWR", "ON", "MCHP"
     ]
 
     // MARK: Earnings
