@@ -295,7 +295,27 @@ enum DataService {
         guard let (data, _) = try? await session.data(from: pageURL),
               let html = String(data: data, encoding: .utf8)
         else { return nil }
-        return parseLiveTVPlayerSource(html: html)
+        let source = parseLiveTVPlayerSource(html: html)
+        guard case .hls(let url) = source else { return source }
+        return .hls(await adFreeStream(for: url) ?? url)
+    }
+
+    /// The origin's own playlist behind an ad-insertion playlist (AWS MediaTailor's
+    /// `/v1/manifest/…`), e.g. CNN's. Ad breaks spliced into the single quality it
+    /// serves break the playlist's numbering, and Apple's player stops with error
+    /// -12312; the origin's playlist has no splices and offers every quality.
+    static func originPlaylistURL(for url: URL) -> URL? {
+        guard url.path.hasPrefix("/v1/manifest/"), let host = url.host else { return nil }
+        return URL(string: "https://\(host)/index.m3u8")
+    }
+
+    private static func adFreeStream(for url: URL) async -> URL? {
+        guard let origin = originPlaylistURL(for: url),
+              let (data, response) = try? await session.data(from: origin),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              String(decoding: data, as: UTF8.self).contains("#EXT-X-STREAM-INF")
+        else { return nil }
+        return origin
     }
 
     /// Finds the stream in a channel page: an HLS playlist in `m3u8Url`, or else the

@@ -862,6 +862,35 @@ final class DeskPulseTests: XCTestCase {
         XCTAssertNil(DataService.parseLiveTVPlayerSource(html: "<html><body>Offline</body></html>"))
     }
 
+    func testPlaylistAddressesAreMadeStable() {
+        let base = URL(string: "https://cdn.example.com/live/index.m3u8")!
+        let playlist = """
+        #EXTM3U
+        #EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+        #EXT-X-STREAM-INF:BANDWIDTH=1
+        index_3.m3u8?token=a
+        #EXTINF:6.0,
+        index_3_7.ts?pb_type=pb-x_cloudfront&m=1
+        #EXTINF:6.0,
+        https://other.example.com/seg8.ts?pb_type=y
+        """
+        let lines = HLSPlaylistNormalizer.normalize(playlist: playlist, baseURL: base).components(separatedBy: "\n")
+        XCTAssertEqual(lines[1], "#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn.example.com/live/key.bin\"")
+        XCTAssertEqual(lines[3], "deskpulse-hls://cdn.example.com/live/index_3.m3u8?token=a")
+        XCTAssertEqual(lines[5], "https://cdn.example.com/live/index_3_7.ts?m=1")
+        XCTAssertEqual(lines[7], "https://other.example.com/seg8.ts")
+        XCTAssertEqual(
+            HLSPlaylistNormalizer.realURL(for: URL(string: lines[3])!),
+            URL(string: "https://cdn.example.com/live/index_3.m3u8?token=a")
+        )
+    }
+
+    func testAdInsertionPlaylistMapsToOrigin() {
+        let stitched = URL(string: "https://d1.cloudfront.net/v1/manifest/abc/cc-1/def/2.m3u8")!
+        XCTAssertEqual(DataService.originPlaylistURL(for: stitched), URL(string: "https://d1.cloudfront.net/index.m3u8"))
+        XCTAssertNil(DataService.originPlaylistURL(for: URL(string: "https://cdn.example.com/live/index.m3u8")!))
+    }
+
     // MARK: Situation layout upgrade
 
     func testOldSituationLayoutSwapsChannel13ForCNNLive() {

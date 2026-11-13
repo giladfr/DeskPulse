@@ -14,6 +14,7 @@ final class StreamPlayerModel: ObservableObject {
     var onGiveUp: (() -> Void)?
 
     let player = AVPlayer()
+    private let playlists = HLSPlaylistNormalizer()
     private var url: URL?
     private var label = ""
     private var failures = 0
@@ -22,7 +23,7 @@ final class StreamPlayerModel: ObservableObject {
     private var watchdog: Task<Void, Never>?
 
     init() {
-        // The player for each channel keeps a few seconds in hand, which AirPlay needs.
+        // The player waits for enough of the stream to play smoothly, which AirPlay needs.
         player.automaticallyWaitsToMinimizeStalling = true
         player.allowsExternalPlayback = true
         player.preventsDisplaySleepDuringVideoPlayback = false
@@ -47,8 +48,13 @@ final class StreamPlayerModel: ObservableObject {
     private func load() {
         guard let url else { return }
         observations.removeAll()
-        let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 8
+        let asset = AVURLAsset(url: HLSPlaylistNormalizer.playerURL(for: url))
+        asset.resourceLoader.setDelegate(playlists, queue: playlists.queue)
+        let item = AVPlayerItem(asset: asset)
+        // Play half a minute behind live, so there are several segments in hand when
+        // one arrives late, and stay that far behind after a stall.
+        item.configuredTimeOffsetFromLive = CMTime(seconds: 30, preferredTimescale: 1)
+        item.automaticallyPreservesTimeOffsetFromLive = true
         item.publisher(for: \.status)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
@@ -64,8 +70,9 @@ final class StreamPlayerModel: ObservableObject {
                 }
             }
             .store(in: &observations)
+        // A stall recovers by itself once more of the stream arrives; reloading would
+        // throw away what is buffered. The watchdog handles one that doesn't.
         NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification, object: item)
-            .merge(with: NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification, object: item))
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.scheduleReload(after: 4) }
             .store(in: &observations)
