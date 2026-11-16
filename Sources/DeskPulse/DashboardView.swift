@@ -331,30 +331,23 @@ struct DashboardView: View {
         }
         .frame(width: 27, height: 27)
         .contentShape(RoundedRectangle(cornerRadius: 7))
-        .gesture(
-            LongPressGesture(minimumDuration: 0.75)
-                .exclusively(before: TapGesture())
-                .onEnded { result in
-                    switch result {
-                    case .first:
-                        model.saveLayout(slot: slot)
-                        savedSlotFeedback = slot
-                        NSHapticFeedbackManager.defaultPerformer.perform(
-                            .alignment,
-                            performanceTime: .now
-                        )
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            if savedSlotFeedback == slot {
-                                savedSlotFeedback = nil
-                            }
-                        }
-                    case .second:
-                        withAnimation(.snappy(duration: 0.3)) {
-                            _ = model.restoreLayout(slot: slot)
-                        }
-                    }
+        .holdOrClick {
+            model.saveLayout(slot: slot)
+            savedSlotFeedback = slot
+            NSHapticFeedbackManager.defaultPerformer.perform(
+                .alignment,
+                performanceTime: .now
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                if savedSlotFeedback == slot {
+                    savedSlotFeedback = nil
                 }
-        )
+            }
+        } onClick: {
+            withAnimation(.snappy(duration: 0.3)) {
+                _ = model.restoreLayout(slot: slot)
+            }
+        }
         .help(
             isSaved
                 ? "Layout \(slot): click to restore, press and hold to overwrite"
@@ -400,28 +393,21 @@ struct DashboardView: View {
         }
         .frame(width: 27, height: 27)
         .contentShape(RoundedRectangle(cornerRadius: 7))
-        .gesture(
-            LongPressGesture(minimumDuration: 0.75)
-                .exclusively(before: TapGesture())
-                .onEnded { result in
-                    switch result {
-                    case .first:
-                        model.saveWarLayout()
-                        warSavedFeedback = true
-                        NSHapticFeedbackManager.defaultPerformer.perform(
-                            .alignment,
-                            performanceTime: .now
-                        )
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                            warSavedFeedback = false
-                        }
-                    case .second:
-                        withAnimation(.snappy(duration: 0.4)) {
-                            model.activateWarLayout(in: canvasSize)
-                        }
-                    }
-                }
-        )
+        .holdOrClick {
+            model.saveWarLayout()
+            warSavedFeedback = true
+            NSHapticFeedbackManager.defaultPerformer.perform(
+                .alignment,
+                performanceTime: .now
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                warSavedFeedback = false
+            }
+        } onClick: {
+            withAnimation(.snappy(duration: 0.4)) {
+                model.activateWarLayout(in: canvasSize)
+            }
+        }
         .help(
             model.hasSavedWarLayout
                 ? "Israel situation layout: click to restore, press and hold to overwrite"
@@ -433,6 +419,47 @@ struct DashboardView: View {
                 ? "Click to restore or press and hold to overwrite"
                 : "Click for the default layout or press and hold to save"
         )
+    }
+}
+
+/// Click to act, or press and hold to do something else (save a layout). Timed by
+/// hand: a long press composed with a tap stopped reporting plain clicks on newer
+/// macOS, which left the layout buttons doing nothing.
+private struct HoldOrClick: ViewModifier {
+    var holdDuration: Double = 0.75
+    let onHold: () -> Void
+    let onClick: () -> Void
+    @State private var holdTask: Task<Void, Never>?
+    @State private var held = false
+
+    func body(content: Content) -> some View {
+        content
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard holdTask == nil else { return }
+                        held = false
+                        holdTask = Task {
+                            try? await Task.sleep(for: .seconds(holdDuration))
+                            guard !Task.isCancelled else { return }
+                            held = true
+                            onHold()
+                        }
+                    }
+                    .onEnded { _ in
+                        holdTask?.cancel()
+                        holdTask = nil
+                        if !held { onClick() }
+                        held = false
+                    }
+            )
+            .accessibilityAction { onClick() }
+    }
+}
+
+extension View {
+    fileprivate func holdOrClick(onHold: @escaping () -> Void, onClick: @escaping () -> Void) -> some View {
+        modifier(HoldOrClick(onHold: onHold, onClick: onClick))
     }
 }
 
